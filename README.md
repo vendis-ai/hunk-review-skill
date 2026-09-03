@@ -35,7 +35,8 @@ cd hunk-review-skill
 ./install.sh          # --dry-run to see what it would do first
 ```
 
-Everything is symlinked back into the checkout, so `git pull` is the whole update story.
+Everything is symlinked back into the checkout, so updating is mostly just `git pull` — see
+[Updating](#updating).
 
 The installer never clobbers a real file, and it refuses to run if a destination directory is
 itself a symlink back into this repo. Re-running it is safe.
@@ -53,6 +54,26 @@ If you already have an `[extensions]` section in `~/.config/hunk/config.toml`, t
 **will not edit it**. It prints the exact line to add instead. TOML forbids a second `[extensions]`
 table, and a shell script rewriting an existing `paths` array is precisely how the silent failure
 below gets introduced.
+
+## Updating
+
+```sh
+cd hunk-review-skill && git pull && ./install.sh
+```
+
+`git pull` on its own covers the common case. The skills, `hunk-plan` and the extension are all
+read straight out of this checkout, so changed content is live the next time you start an agent or
+launch Hunk — nothing to reinstall.
+
+Re-run `install.sh` as well whenever a release **adds a skill**. Nothing links a new one on its
+own, and the failure is silent: it just never shows up. The installer is idempotent and prints
+`(already linked)` for everything unchanged, so running both every time is the safe habit.
+
+⚠ **Don't move or rename the checkout.** The installed symlinks and the absolute path in
+`~/.config/hunk/config.toml` both point here. If you do move it, re-run `install.sh` from the new
+location *and* fix that `paths` entry by hand, since the installer won't touch an existing
+`[extensions]` section. Hunk says nothing when that path is wrong; you just get a flat file list,
+the failure described in [the one thing to know](#the-one-thing-to-know-if-it-looks-broken).
 
 ## Usage
 
