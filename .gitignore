@@ -1,0 +1,3 @@
+# Extension dev dependencies. hunk injects react/@opentui/hunkdiff at load
+# time, so the runtime never needs these -- install.sh deliberately skips them.
+node_modules/

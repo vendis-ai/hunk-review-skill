@@ -1,0 +1,327 @@
+#!/bin/bash
+#
+# Find and manage the review-plan hunk extension's plan file without
+# reimplementing the path derivation that lives in the extension's own
+# plan.ts (repoDigest / planCandidatePaths / viewedStatePath). Lets an agent
+# (or the user) write, inspect, and clear a plan from outside hunk itself.
+#
+# Path resolution mirrors plan.ts exactly:
+#   state-dir plan:  ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.json
+#   in-repo plan:    <repoRoot>/.hunk/review-plan.json
+#   viewed state:    ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.viewed.json
+# <digest> is the first 16 hex chars of sha256(<absolute repo root path>),
+# byte-identical to plan.ts's repoDigest() -- hashed with `printf %s`, not
+# `echo`, so no trailing newline sneaks into the hashed bytes.
+#
+# hunk itself also honors an HUNK_REVIEW_PLAN env var that overrides both of
+# the above; `show` checks it too (matching plan.ts's own candidate order)
+# but `path`/`write` do not expose it as a flag -- this tool only manages the
+# two on-disk locations hunk resolves by default.
+
+set -euo pipefail
+
+PROG=hunk-plan
+
+usage() {
+  cat <<'USAGE'
+Usage: hunk-plan <command> [options]
+
+Commands:
+  path [--in-repo]     Print the plan path (state-dir path by default,
+                        <repoRoot>/.hunk/review-plan.json with --in-repo).
+  write [--in-repo]     Read a plan as JSON on stdin, validate it (version==1,
+                        a "groups" array), and write it atomically to the
+                        resolved path (default: state-dir path).
+  show                  Print the resolved plan (checks HUNK_REVIEW_PLAN, then
+                        the in-repo path, then the state-dir path -- same
+                        order plan.ts uses) or exit 1 naming what was checked.
+  sidecar [--in-repo] [-o <path>]
+                        Read the resolved plan (same resolution as `show`;
+                        --in-repo reads <repoRoot>/.hunk/review-plan.json
+                        directly instead) and emit hunk's native
+                        `--agent-context` sidecar JSON: file order plus each
+                        file's plan annotations, tagged "source":
+                        "review-plan". Written to stdout, or to -o <path>.
+                        A group marked hidden is sunk to the end of the file
+                        order (hunk's sidecar has no hide mechanism); a note
+                        on stderr says how many files were sunk that way.
+  clear [--yes]         Remove the plan (both possible locations) and the
+                        sibling <digest>.viewed.json. Asks for confirmation
+                        unless --yes is passed.
+  viewed                Print the viewed-state path.
+  -h, --help            Show this help.
+
+Must be run inside a git repository; the repo root is resolved via
+`git rev-parse --show-toplevel`.
+USAGE
+}
+
+die() {
+  echo "$PROG: $*" >&2
+  exit 1
+}
+
+repo_root() {
+  local root
+  if ! root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    die "not inside a git repository"
+  fi
+  printf '%s' "$root"
+}
+
+# First 16 hex chars of sha256(<repo root>), matching plan.ts's repoDigest().
+digest_for() {
+  local root="$1" hash
+  hash=$(printf '%s' "$root" | sha256sum) || die "sha256sum failed"
+  printf '%s' "${hash:0:16}"
+}
+
+state_dir() {
+  printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+state_plan_path() {
+  local root="$1" d
+  d=$(digest_for "$root")
+  printf '%s/hunk/review-plan/%s.json' "$(state_dir)" "$d"
+}
+
+in_repo_plan_path() {
+  printf '%s/.hunk/review-plan.json' "$1"
+}
+
+viewed_path_for() {
+  local root="$1" d
+  d=$(digest_for "$root")
+  printf '%s/hunk/review-plan/%s.viewed.json' "$(state_dir)" "$d"
+}
+
+has_flag() {
+  local want="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    [[ $arg == "$want" ]] && return 0
+  done
+  return 1
+}
+
+cmd_path() {
+  local root target
+  root=$(repo_root)
+  if has_flag --in-repo "$@"; then
+    target=$(in_repo_plan_path "$root")
+  else
+    target=$(state_plan_path "$root")
+  fi
+  printf '%s\n' "$target"
+}
+
+cmd_write() {
+  local root target dir tmp
+  root=$(repo_root)
+  if has_flag --in-repo "$@"; then
+    target=$(in_repo_plan_path "$root")
+  else
+    target=$(state_plan_path "$root")
+  fi
+
+  command -v jq >/dev/null 2>&1 || die "jq is required to validate the plan before writing"
+
+  dir=$(dirname "$target")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.review-plan.XXXXXX")
+
+  # Read stdin into the temp file first so a validation failure never
+  # touches the real target.
+  if ! cat >"$tmp"; then
+    rm -f "$tmp"
+    die "failed to read plan JSON from stdin"
+  fi
+
+  if ! jq -e '(.version == 1) and ((.groups | type) == "array")' "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    die "stdin is not a valid review plan (need JSON with \"version\": 1 and a \"groups\" array)"
+  fi
+
+  mv -f "$tmp" "$target"
+  echo "$PROG: wrote $target"
+}
+
+cmd_show() {
+  local root candidates=() c
+  root=$(repo_root)
+
+  if [[ -n ${HUNK_REVIEW_PLAN:-} ]]; then
+    candidates+=("$HUNK_REVIEW_PLAN")
+  fi
+  candidates+=("$(in_repo_plan_path "$root")")
+  candidates+=("$(state_plan_path "$root")")
+
+  for c in "${candidates[@]}"; do
+    if [[ -f $c ]]; then
+      cat "$c"
+      return 0
+    fi
+  done
+
+  {
+    echo "$PROG: no review plan found. Looked at:"
+    printf '  %s\n' "${candidates[@]}"
+  } >&2
+  exit 1
+}
+
+# Emit hunk's native --agent-context sidecar JSON: { version, summary?, files }
+# derived from the plan's own groups/files/annotations, in the order the
+# extension applies them. This is a lossy one-way projection of the plan
+# (importance/collapsed/hidden all vanish, hidden groups just sink to the
+# bottom of the file order) -- the plan JSON stays the single authored
+# source, this is only ever regenerated from it.
+cmd_sidecar() {
+  local root resolved out_path=""
+  root=$(repo_root)
+
+  command -v jq >/dev/null 2>&1 || die "jq is required to build the sidecar"
+
+  if has_flag --in-repo "$@"; then
+    resolved=$(in_repo_plan_path "$root")
+    [[ -f $resolved ]] || die "no plan at $resolved (--in-repo)"
+  else
+    local candidates=() c
+    if [[ -n ${HUNK_REVIEW_PLAN:-} ]]; then
+      candidates+=("$HUNK_REVIEW_PLAN")
+    fi
+    candidates+=("$(in_repo_plan_path "$root")")
+    candidates+=("$(state_plan_path "$root")")
+
+    resolved=""
+    for c in "${candidates[@]}"; do
+      if [[ -f $c ]]; then
+        resolved="$c"
+        break
+      fi
+    done
+    if [[ -z $resolved ]]; then
+      {
+        echo "$PROG: no review plan found. Looked at:"
+        printf '  %s\n' "${candidates[@]}"
+      } >&2
+      exit 1
+    fi
+  fi
+
+  local args=("$@") i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == "-o" ]]; then
+      out_path="${args[i + 1]:-}"
+      [[ -n $out_path ]] || die "-o requires a path argument"
+    fi
+  done
+
+  local sunk_count
+  sunk_count=$(jq '[.groups[]? | select(.hidden == true) | (.files // []) | length] | add // 0' "$resolved") ||
+    die "failed to inspect $resolved"
+
+  local json
+  json=$(jq -c '
+    (.groups // []) as $groups
+    | ($groups | map(select(.hidden != true))) as $visible
+    | ($groups | map(select(.hidden == true))) as $hidden
+    | (
+        ($visible + $hidden)
+        | map(
+            . as $group
+            | ($group.files // [])
+            | map(
+                . as $file
+                | {path: $file.path}
+                + (
+                    if $group.title == "Unplanned" then
+                      (if ($file.note // null) != null then {summary: $file.note} else {} end)
+                    else
+                      {summary: (if ($file.note // null) != null then ($group.title + " — " + $file.note) else $group.title end)}
+                    end
+                  )
+                + {annotations: (($file.annotations // []) | map(. + {source: "review-plan"}))}
+              )
+          )
+        | add // []
+      ) as $files
+    | {version: 1}
+      + (if (.summary // null) != null then {summary: .summary} else {} end)
+      + {files: $files}
+  ' "$resolved") || die "failed to build sidecar JSON from $resolved"
+
+  printf '%s' "$json" | jq -e . >/dev/null 2>&1 || die "internal error: sidecar JSON failed to validate"
+
+  if [[ $sunk_count -gt 0 ]]; then
+    echo "$PROG: sank $sunk_count file(s) from hidden group(s) to the end of the sidecar file order" >&2
+  fi
+
+  if [[ -n $out_path ]]; then
+    printf '%s' "$json" | jq . >"$out_path"
+    echo "$PROG: wrote $out_path"
+  else
+    printf '%s' "$json" | jq .
+  fi
+}
+
+cmd_clear() {
+  local root state_plan in_repo_plan viewed target existing=() reply
+  root=$(repo_root)
+  state_plan=$(state_plan_path "$root")
+  in_repo_plan=$(in_repo_plan_path "$root")
+  viewed=$(viewed_path_for "$root")
+
+  for target in "$state_plan" "$in_repo_plan" "$viewed"; do
+    [[ -e $target ]] && existing+=("$target")
+  done
+
+  if [[ ${#existing[@]} -eq 0 ]]; then
+    echo "$PROG: nothing to clear (checked $state_plan, $in_repo_plan, $viewed)"
+    return 0
+  fi
+
+  if ! has_flag --yes "$@"; then
+    echo "About to remove:"
+    printf '  %s\n' "${existing[@]}"
+    read -r -p "Proceed? [y/N] " reply || reply="n"
+    [[ $reply =~ ^[Yy]$ ]] || die "aborted, nothing removed"
+  fi
+
+  for target in "${existing[@]}"; do
+    rm -f "$target"
+    echo "$PROG: removed $target"
+  done
+}
+
+cmd_viewed() {
+  local root
+  root=$(repo_root)
+  printf '%s\n' "$(viewed_path_for "$root")"
+}
+
+main() {
+  local sub="${1:-}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$sub" in
+    path) cmd_path "$@" ;;
+    write) cmd_write "$@" ;;
+    show) cmd_show "$@" ;;
+    sidecar) cmd_sidecar "$@" ;;
+    clear) cmd_clear "$@" ;;
+    viewed) cmd_viewed "$@" ;;
+    -h | --help) usage ;;
+    "")
+      usage >&2
+      exit 1
+      ;;
+    *)
+      die "unknown command '$sub' (see --help)"
+      ;;
+  esac
+}
+
+main "$@"
