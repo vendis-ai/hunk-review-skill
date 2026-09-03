@@ -90,7 +90,18 @@ collapsed `why` for the reasoning, a Mermaid diagram where the substance is a se
 and a table of contents. `Skim`-tier groups start collapsed, so the page opens showing only what
 needs a decision.
 
-Then open Hunk. `}` and `{` jump between annotated hunks; `v` marks a file reviewed.
+Then open Hunk on the same range the plan was built from. On a feature branch that's the base
+branch, three dots, `HEAD`:
+
+```sh
+hunk diff origin/dev...HEAD      # or origin/main — whatever you forked from
+```
+
+Three dots, not two. `..` also drags in everything that landed on the base branch since you forked,
+which can multiply the diff several times over and fills the pane with files the plan says nothing
+about.
+
+`}` and `{` jump between annotated hunks; `v` marks a file reviewed.
 
 Left notes in Hunk and want them acted on?
 
