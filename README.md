@@ -17,16 +17,23 @@ and everything else sinks.
 |---|---|
 | `skills/hunk-review/` | Builds the plan and the HTML writeup. The main event. |
 | `skills/hunk-handle-notes/` | Reads and acts on review notes you left in a live Hunk session. |
-| `bin/hunk-plan` | CLI to write, read, convert, and clear the plan file. |
+| `bin/hunk-plan` | CLI to write, read, convert, render, and clean up the plan file. |
+| `assets/` | The writeup's frame — CSS, runtime JS, and vendored `marked` and `mermaid`. |
 | `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
 | `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
+| `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
 
 ## Requirements
 
 - [Hunk](https://github.com/modem-dev/hunk) — `mise use -g aqua:modem-dev/hunk`
+- `git`, `bash` and `jq` — `hunk-plan` validates, converts and renders with them
 - An agent that reads `~/.agents/skills/` or `~/.claude/skills/` (Claude Code, Codex, OpenCode,
   Cursor, and most others)
 - `~/.local/bin` on your `PATH`
+
+Nothing else. The writeup is built by the same `bash`/`jq` the plan already needs, and its
+Markdown and diagram rendering come from the two libraries vendored in `assets/` — so the page
+opens over `file://` and never makes a network call.
 
 ## Install
 
@@ -92,6 +99,15 @@ collapsed `why` for the reasoning, a Mermaid diagram where the substance is a se
 and a table of contents. `Skim`-tier groups start collapsed, so the page opens showing only what
 needs a decision.
 
+Any ADR, RFC or runbook the branch leans on becomes **its own page inside that same file**,
+converted from the working-tree copy and reachable from a nav bar across the top. Follow a
+citation to read the decision it rests on, hit Back, and you're at the group you left. GitHub
+`#123` references become links on their own, and every off-machine link opens in a new tab.
+
+The agent writes only prose. The frame, nav, table of contents, section ids, badges and link
+rules are all produced by `hunk-plan render` from the plan itself, so the page can't disagree with
+what Hunk shows you — and the agent can't quietly reinvent the layout on its next run.
+
 Then open Hunk on the same range the plan was built from. On a feature branch that's the base
 branch, three dots, `HEAD`:
 
@@ -110,6 +126,26 @@ paste back into an agent — see [`extension/copy-path/`](extension/copy-path/RE
 Left notes in Hunk and want them acted on?
 
 > work through my hunk notes
+
+## Where the files go, and how they leave
+
+Plans live outside your repos, in `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/`, keyed by
+a hash of the repo path. Each review leaves a `<digest>.json` plan, a `<digest>.report/` directory
+of the agent's prose, and the rendered `<digest>.html`, plus a shared copy of the two vendored
+libraries.
+
+```sh
+hunk-plan clear              # this repo's plan, report and rendered page
+hunk-plan gc --dry-run       # everything collectable, machine-wide
+hunk-plan gc                 # ...and remove it
+```
+
+`gc` collects three things: artifacts whose plan file is gone, plans whose **repo** is gone, and
+plans older than 30 days (`--older-than <days>`). That second one needs a name, not a hash — so
+`write` keeps a `repos.json` mapping each digest back to its repo root. Without it nothing could
+ever tell whether `0e8a342967784894.viewed.json` still belonged to anything, which is exactly how
+these directories used to silently accumulate. Neither command ever deletes as a side effect of a
+write; a crowded directory only earns a one-line hint.
 
 ## The one thing to know if it looks broken
 
@@ -141,6 +177,19 @@ bun install
 bun test
 bun run typecheck
 ```
+
+The CLI and the renderer have no such dependency — their tests are plain bash against a throwaway
+repo and a throwaway `XDG_STATE_HOME`, so they never touch your real plan directory:
+
+```sh
+test/render_test.sh                          # frame, ordering, slugs, gc, clear
+CHROME=google-chrome-stable test/render_test.sh   # ...plus the DOM behaviour
+```
+
+The `CHROME` pass is the one that matters when touching `assets/report.js`: it asserts that
+Markdown converts, that a `#123` inside a code fence is *not* linkified, that external links get
+`target="_blank"`, that a `<script>` in a converted doc is stripped, and that hash routing swaps
+panes.
 
 `extension/review-plan/README.md` documents the plan JSON schema, the annotation model, key
 bindings, and where plan and viewed state live on disk.

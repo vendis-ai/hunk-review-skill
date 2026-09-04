@@ -47,20 +47,32 @@ skip a reply because the fix you are making will move or delete that line.
 
 ## Keep the HTML writeup in sync
 
-hunk-review (if it ran first) leaves a companion HTML doc at the JSON plan's path with `.json`
-swapped for `.html`:
+hunk-review (if it ran first) leaves a companion writeup next to the plan. **Never edit that
+HTML file.** It is generated, and the next `hunk-plan render` overwrites whatever you put there.
+Write to the report directory instead and re-render:
 
-    plan_path="$(hunk-plan path)"
-    html_path="${plan_path%.json}.html"
+    report_dir="$(hunk-plan report-dir)"
 
-If that file exists, update it as you handle notes — do not leave it stale. For every note you
-act on (all four buckets: fixed, explained, held for discussion, declined), find its group's
-section by id — `group-<slug>`, the group's title lowercased with spaces turned to hyphens, same
-scheme hunk-review used to write it — and add one short entry there: file:line, what happened
-(Fixed / Explained / Open question — needs your input / Declined, out of scope), one line. Map a
-note's file to its group via the JSON plan (`hunk-plan show`).
+If that directory does not exist, skip this section — there is no writeup yet to update.
 
-If `html_path` does not exist, skip this — there is no writeup yet to update.
+For every note you act on (all four buckets: fixed, explained, held for discussion, declined),
+append one line to `<report_dir>/<group-slug>.notes.md`, the notes file for the group that owns
+the note's file. Map a note's file to its group via the JSON plan (`hunk-plan show`); the slug is
+the group's title lowercased with runs of non-alphanumerics collapsed to a single hyphen, and the
+body files already sitting in that directory show you the exact spelling.
+
+Each line is: file:line, what happened (Fixed / Explained / Open question — needs your input /
+Declined, out of scope), one sentence. Markdown, same as the group bodies:
+
+    - `app/models/order.rb:88` — **Fixed.** Nil guard added before the reserve call.
+    - `app/jobs/sync_job.rb:12` — **Open question — needs your input.** Retry budget is shared
+      with the importer; changing it here changes it there.
+
+These files are yours alone. The `.notes.md` sidecar is separate from the group's `.md` body
+precisely so you never rewrite hunk-review's prose, and so handling a second round of notes
+appends rather than clobbers. Then re-render once, after all notes are handled:
+
+    hunk-plan render
 
 ## Report back
 
@@ -82,6 +94,8 @@ HTML writeup was updated, say so and give its path.
     hunk session context      --repo . --json
     hunk-plan show
     hunk-plan path
+    hunk-plan report-dir
+    hunk-plan render
 
 ## Failure modes
 

@@ -63,8 +63,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    Also treat anything the reviewer config's `knowledge_base` (step 2) already named as a
    candidate. For each identifier found, search the repo for a matching file or heading —
    `rg -il` the identifier itself, then the conventional locations (`docs/adr/`, `docs/decisions/`,
-   `docs/rfcs/`, `docs/prd/`) if the direct grep misses. A match earns an excerpt in the HTML
-   appendix (step 9). No match is not an error: most identifiers cited in a commit message are
+   `docs/rfcs/`, `docs/prd/`) if the direct grep misses. A match earns an entry in the report's
+   `meta.json` `docs` array (step 9) — `{ "id": "ADR 2026-07-01", "path": "docs/adr/…md",
+   "citedBy": "<group-slug>" }` — and the renderer turns each one into its own page inside the
+   writeup, converted from the working-tree copy, reachable from the nav and linking back to the
+   group that cited it. Record the path; never paste the file's contents into a group body.
+   No match is not an error: most identifiers cited in a commit message are
    shorthand for a doc that lives outside the repo (Notion, Confluence, an internal wiki), and get
    an ordinary external link there instead if a URL is already present in the text — never a
    fabricated one. This step is in-repo only and reads no network; do not fetch external URLs to
@@ -161,104 +165,69 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    positive ordered integer pairs. `hidden` only takes effect when `hide_groups = true` is set in
    config.
 
-9. Write the HTML writeup, always — this is not optional. Optimise for skimming, not reading: the
-   reader is switching between this and other work all day. Paragraphs of narrative are the
-   failure mode this step used to produce — don't. Per group, in this fixed shape:
+9. Write the HTML writeup, always — this is not optional. You author prose only. `hunk-plan
+   render` owns the page frame, the palette and its dark-mode pairing, the nav, the table of
+   contents, the section ids, the verdict badges, the Markdown and Mermaid wiring, and every
+   link rule. **Never hand-write an HTML document, a `<style>` block, or a `<script>` tag for
+   this.** Re-deriving that plumbing by hand is exactly how it drifts, and the renderer already
+   knows every group's title, summary and importance from the plan you just wrote.
 
-   - **Verdict badge** first, colour-coded, driven by `importance`: 1-2 → `Critical`, 3-5 →
-     `Review`, 6+ → `Skim`.
-   - **3-6 short bullets**, not sentences — the fact, the risk, or the check, nothing narrating
-     around it. Caveman register is fine: "Claim before read = retry eats valid data" beats "The
-     reordering here matters because it changes what happens on retry."
-   - **Ref tags** on any bullet a `[A]`/`[B]`/`[C]` annotation (step 7) backs: `<code>delivery.rb</code>
-     <span class="ref">ref A</span>`.
-   - **GitHub references become real links.** Once per run, derive `owner/repo` from
-     `git remote get-url origin` (handles both `git@github.com:owner/repo.git` and
-     `https://github.com/owner/repo` forms; skip this bullet entirely if the remote isn't on
-     github.com). Any bare `#123` found in a bullet, an annotation, or quoted commit text becomes
-     `<a href="https://github.com/<owner>/<repo>/issues/123">#123</a>` — GitHub's `/issues/<n>`
-     route resolves PRs too, so there's no need to tell the two apart. An explicit
-     `other-owner/other-repo#123` links to that repo directly, verbatim, regardless of the local
-     origin. No GitHub origin, or a reference that doesn't look like a real issue/PR number: leave
-     `#123` as plain text — a wrong guess is worse than no link.
-   - **Design-doc citations become in-page links.** Any bullet citing an identifier step 3
-     resolved to a file wraps it as `<a href="#doc-<slug>" class="docref">ADR 2026-07-01</a>` —
-     its own style, distinct from the inert `.ref` chips two bullets up: a `.ref` chip points into
-     Hunk's terminal view, a `.docref` link jumps inside this same page.
-   - **One `<details><summary>why</summary>…</details>`** per group for reasoning that doesn't fit
-     a bullet — trade-offs, the history behind a fix, the deeper prose the old version of this
-     step asked for inline everywhere. Closed by default; it's there on demand, not blocking the
-     skim.
-   - **A Mermaid diagram** (`<pre class="mermaid">…</pre>`) only when the group's substance is a
-     sequence, a state machine, or a race — the shape bullets are worst at. Skip it for a group
-     that's just a file list or a one-shot change; an unearned diagram is still verbosity.
-     `sequenceDiagram` for request/timing races, `stateDiagram-v2` for lifecycle/reservation
-     flows, `flowchart` otherwise. Few-word node labels — it's a map, not a second copy of the
-     bullets.
+   Scaffold the report directory first. It creates one Markdown file per group, named with the
+   exact slug the renderer will use, so you never compute a slug yourself:
 
-   `Skim`-tier groups render inside `<details>`, closed by default, so the page opens showing only
-   what needs a decision; `Critical` and `Review` groups render open. Above every group, a 3-bullet
-   TL;DR — what the branch does, the single biggest risk, the one thing to check first — is the
-   only prose-adjacent text allowed above the fold.
+       hunk-plan report-dir --init
 
-   Wrap each group in `<section id="group-<slug>">`, where `<slug>` is the group's title
-   lowercased with spaces turned to hyphens (e.g. "Security boundary" → `group-security-boundary`).
-   `hunk-handle-notes` looks up this exact id to attach follow-ups later — do not skip it or
-   invent a different scheme. Assemble one static HTML file: semantic markup, inline `<style>`
-   only, a table of contents linking to each section with that group's one-sentence `summary`
-   (step 6) shown under the title, plus a final entry for `#doc-refs` when that section exists.
+   Then fill in the files it created. Optimise for skimming, not reading: the reader is
+   switching between this and other work all day. Paragraphs of narrative are the failure mode
+   this step used to produce — don't.
 
-   When step 3 resolved at least one design-doc identifier to a file in the repo, append one more
-   `<section id="doc-refs">` after the last group, heading "Referenced docs." One
-   `<article id="doc-<slug>">` per resolved doc, `<slug>` built the same way as a group slug (the
-   identifier, lowercased, spaces to hyphens — `ADR 2026-07-01` → `doc-adr-2026-07-01`). Each
-   article carries the doc's own section heading, the cited excerpt only — never the whole file —
-   a caption with the source path, and a `<a href="#group-<citing-slug>">back to review</a>` link
-   to the group that cited it (the first, if more than one does). Omit the section entirely when
-   nothing resolved; an empty appendix is worse than no appendix.
+   - `_tldr.md` — exactly 3 bullets: what the branch does, the single biggest risk, the one
+     thing to check first. The only prose-adjacent text above the fold.
+   - `<group-slug>.md` — one file per group, **3-6 short bullets**, not sentences. The fact, the
+     risk, or the check, nothing narrating around it. Caveman register is fine: "Claim before
+     read = retry eats valid data" beats "The reordering here matters because it changes what
+     happens on retry." Do not repeat the group's title or summary at the top — the renderer
+     already emits both.
+   - `meta.json` — `title`, `subtitle` (the branch/base and the counts), and `docs` (step 3).
 
-   Write it to the JSON plan's path with the extension swapped:
+   Inside a group file, Markdown with inline HTML passthrough:
 
-       plan_path="$(hunk-plan path)"
-       html_path="${plan_path%.json}.html"
+   - **Ref tags** on any bullet a `[A]`/`[B]`/`[C]` annotation (step 7) backs:
+     `` `delivery.rb` <span class="ref">ref A</span> ``.
+   - **Design-doc citations** are ordinary Markdown links to the doc's own page:
+     `[ADR 2026-07-01](#doc-adr-2026-07-01)`, where the slug is `doc-` plus the `id` you gave it
+     in `meta.json`, lowercased with runs of non-alphanumerics collapsed to a single hyphen.
+   - **GitHub references need no markup at all.** Write `#123` as plain text and the renderer
+     links it, deriving `owner/repo` from `git remote get-url origin` itself. `other/repo#123`
+     works too, and a `#123` inside a code fence is deliberately left alone. Do not hand-write a
+     GitHub URL; a wrong guess is worse than no link.
+   - **External links** need no `target` — every `http(s)` link opens in a new tab by rule.
+   - **One `<details><summary>why</summary>…</details>`** per group for reasoning that doesn't
+     fit a bullet — trade-offs, the history behind a fix. Closed by default; there on demand,
+     not blocking the skim.
+   - **A Mermaid diagram** only when the group's substance is a sequence, a state machine, or a
+     race — the shape bullets are worst at. Skip it for a group that's just a file list or a
+     one-shot change; an unearned diagram is still verbosity. `sequenceDiagram` for
+     request/timing races, `stateDiagram-v2` for lifecycle/reservation flows, `flowchart`
+     otherwise. Few-word node labels — it's a map, not a second copy of the bullets. Write it as
+     a ```mermaid fence or as `<pre class="mermaid">…</pre>`; both render. Keep self-loop and
+     edge labels as short as node labels, or they overlap under Mermaid's auto-layout.
 
-   Same convention as the JSON plan — out-of-repo (or alongside it, under `--in-repo`), regenerated
-   every run, not a durable note. Keep it a local file: it is a review of unmerged code, and its
-   `<script src="mermaid.min.js">` is a relative path that resolves only next to the sibling asset,
-   so publishing it anywhere would both leak the diff and break every diagram on the page.
+   The verdict badge and whether a group starts collapsed are both derived from `importance`
+   (1-2 → `Critical`, 3-5 → `Review`, 6+ → `Skim`, and `Skim` groups render closed) — so get
+   `importance` right in step 6 rather than trying to influence the badge here.
 
-   Mermaid ships vendored in this skill's own `assets/mermaid.min.js` — never load it from a CDN.
-   This file opens via `file://` and must never make a network call to render. Before writing the
-   HTML, copy the asset into the output directory if it isn't already there (it only needs copying
-   once per directory; later runs in the same directory reuse it):
+   A group whose file you leave empty renders with a visible "no writeup" marker and a warning
+   on stderr. That is a bug, not a way to skip a group: use `importance` to sink it instead.
 
-       cp -n "${CLAUDE_SKILL_DIR}/assets/mermaid.min.js" "$(dirname "$html_path")/mermaid.min.js"
+   Then render:
 
-   Claude Code substitutes `${CLAUDE_SKILL_DIR}` with this skill's own directory, whatever the
-   working directory is. Other harnesses do not substitute it — there, resolve the asset relative
-   to where this skill is installed, which under the standard install is
-   `~/.agents/skills/hunk-review/assets/mermaid.min.js`. Do not fall back to a CDN if the copy
-   fails; say the diagram asset is missing instead.
+       hunk-plan render
 
-   Reference it with a plain relative `<script src="mermaid.min.js"></script>`, then initialize it
-   to match the page's own light/dark switching — the report already flips its whole palette via
-   `@media (prefers-color-scheme: dark)`, and a diagram themed for the wrong canvas is unreadable
-   even though it still "renders" with no console error, so this is easy to ship broken and not
-   notice. Detect the mode once, before initializing, and change theme and background together;
-   they are a pair, never move one without the other:
-
-       <script>
-         var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-         mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'neutral' });
-       </script>
-
-   `pre.mermaid` gets a light background (e.g. `#f4f4f2`) by default, and under
-   `@media (prefers-color-scheme: dark)` the page's own `--code-bg` var — safe to reuse now that
-   the diagram's own theme switches with it; it was banned when theme was hardcoded to `neutral`,
-   which draws text for a light canvas and left lifelines and message text unreadably faint on a
-   dark one. `dark` is Mermaid's matching built-in for a dark canvas. Keep self-loop and edge
-   labels as short as node labels — a long one overlaps the neighbouring node under Mermaid's
-   default auto-layout.
+   It writes the HTML next to the plan, copies its own Mermaid and Markdown assets alongside,
+   and prints the path. Keep it a local file: it is a review of unmerged code, and it loads
+   those assets by relative path, so publishing it anywhere would both leak the diff and break
+   every diagram on the page.
 
 10. Hand it back. Tell the user the counts — total files, files listed, annotations — and the
     single command to open the plan, plus the HTML path from step 9. If the `review-plan`
@@ -266,15 +235,20 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     sidecar with `--agent-context`.
 
     Fall back gracefully: if `hunk-plan` is not on PATH, write the sidecar JSON directly and hand
-    the user a `--agent-context` command instead. Say that is what you did.
+    the user a `--agent-context` command instead. Say that is what you did. There is no fallback
+    for the writeup — without `hunk-plan render` there is no frame to put prose in, so say the
+    writeup was skipped rather than hand-rolling an HTML document.
 
 ## Surface
 
-    hunk-plan path    [--in-repo]
-    hunk-plan write   [--in-repo]   < plan.json
+    hunk-plan path       [--in-repo]
+    hunk-plan write      [--in-repo]   < plan.json
     hunk-plan show
-    hunk-plan sidecar [--in-repo] [-o <path>]
-    hunk-plan clear   [--yes]
+    hunk-plan sidecar    [--in-repo] [-o <path>]
+    hunk-plan report-dir [--in-repo] [--init]
+    hunk-plan render     [--in-repo] [-o <path>]
+    hunk-plan clear      [--yes]
+    hunk-plan gc         [--dry-run] [--yes] [--older-than <days>]
 
 ## Failure modes
 

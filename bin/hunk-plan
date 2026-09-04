@@ -45,9 +45,29 @@ Commands:
                         A group marked hidden is sunk to the end of the file
                         order (hunk's sidecar has no hide mechanism); a note
                         on stderr says how many files were sunk that way.
-  clear [--yes]         Remove the plan (both possible locations) and the
-                        sibling <digest>.viewed.json. Asks for confirmation
-                        unless --yes is passed.
+  report-dir [--in-repo] [--init]
+                        Print the report directory (<plan>.report/) that holds
+                        the agent-authored body content for `render`. With
+                        --init, create it and scaffold an empty meta.json,
+                        _tldr.md, and one <group-slug>.md per group in the
+                        plan -- so nothing has to derive a slug by hand.
+                        Existing files are never overwritten.
+  render [--in-repo] [-o <path>]
+                        Render the plan plus its report directory into a
+                        self-contained HTML page at <plan>.html (or -o), and
+                        copy the marked/mermaid assets alongside it. The frame,
+                        nav, table of contents, section ids, verdict badges and
+                        link rules are all derived here; only the body prose
+                        comes from the report directory.
+  clear [--yes]         Remove this repo's plan (both possible locations) and
+                        its sibling .viewed.json, .sidecar.json, .html and
+                        .report/. Asks for confirmation unless --yes.
+  gc [--dry-run] [--yes] [--older-than <days>]
+                        Sweep the whole state directory, not just this repo:
+                        artifacts with no plan file, plans whose repo no longer
+                        exists (resolved through repos.json), and plans older
+                        than <days> (default 30). Shared assets go once the
+                        last report does. Asks for confirmation unless --yes.
   viewed                Print the viewed-state path.
   -h, --help            Show this help.
 
@@ -145,7 +165,17 @@ cmd_write() {
   fi
 
   mv -f "$tmp" "$target"
+  manifest_record "$root"
   echo "$PROG: wrote $target"
+
+  # Never delete as a side effect of a write -- just say when the drawer is
+  # full. Removal stays an explicit `gc`.
+  local sdir count
+  sdir="$(state_dir)/hunk/review-plan"
+  count=$(find "$sdir" -maxdepth 1 -name '*.json' ! -name 'repos.json' ! -name '*.viewed.json' ! -name '*.sidecar.json' 2>/dev/null | wc -l)
+  if [[ ${count:-0} -gt 10 ]]; then
+    echo "$PROG: $count review plans in $sdir -- 'hunk-plan gc --dry-run' shows what is collectable" >&2
+  fi
 }
 
 cmd_show() {
@@ -274,7 +304,14 @@ cmd_clear() {
   in_repo_plan=$(in_repo_plan_path "$root")
   viewed=$(viewed_path_for "$root")
 
-  for target in "$state_plan" "$in_repo_plan" "$viewed"; do
+  # The whole family, not just the plan. Leaving the rendered .html and its
+  # .report/ behind after a `clear` is how the state directory silently grew
+  # artifacts nothing could account for.
+  for target in \
+    "$state_plan" "$in_repo_plan" "$viewed" \
+    "$(html_path_for "$state_plan")" "$(sidecar_path_for "$state_plan")" \
+    "$(report_dir_for "$state_plan")" \
+    "$(html_path_for "$in_repo_plan")" "$(report_dir_for "$in_repo_plan")"; do
     [[ -e $target ]] && existing+=("$target")
   done
 
@@ -291,7 +328,7 @@ cmd_clear() {
   fi
 
   for target in "${existing[@]}"; do
-    rm -f "$target"
+    rm -rf "$target" # -r: the report directory is one of these
     echo "$PROG: removed $target"
   done
 }
@@ -300,6 +337,471 @@ cmd_viewed() {
   local root
   root=$(repo_root)
   printf '%s\n' "$(viewed_path_for "$root")"
+}
+
+# ── report rendering ─────────────────────────────────────────────────────────
+
+# Resolve this script's own checkout so assets/ is reachable through the symlink
+# install.sh drops on PATH.
+assets_dir() {
+  local self dir
+  self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null) || self="${BASH_SOURCE[0]}"
+  dir=$(cd "$(dirname "$self")/.." 2>/dev/null && pwd) ||
+    die "cannot resolve the hunk-plan checkout from $self"
+  [[ -d "$dir/assets" ]] ||
+    die "no assets/ next to the hunk-plan checkout (looked in $dir). Is hunk-plan a copy rather than the symlink install.sh creates?"
+  printf '%s/assets' "$dir"
+}
+
+report_dir_for() { printf '%s.report' "${1%.json}"; }
+html_path_for() { printf '%s.html' "${1%.json}"; }
+sidecar_path_for() { printf '%s.sidecar.json' "${1%.json}"; }
+manifest_path() { printf '%s/hunk/review-plan/repos.json' "$(state_dir)"; }
+
+# GNU base64 wraps at 76 columns and needs -w0 to stop; BSD/macOS base64 has no
+# -w at all and spells decode -D. Strip newlines on the way out and try both
+# decode spellings on the way in, so neither platform needs a special case.
+b64e() { base64 <"$1" | tr -d '\n'; }
+b64d() { printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | base64 -D; }
+
+html_escape() {
+  sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+esc() { printf '%s' "$1" | html_escape; }
+
+# Must stay byte-identical to the jq slug rule in GROUPS_JQ below.
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
+    sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
+# owner/repo, or empty when origin is not a github.com remote. A wrong guess is
+# worse than no link, so anything unrecognized yields nothing.
+github_slug() {
+  local url slug
+  url=$(git remote get-url origin 2>/dev/null) || return 0
+  case "$url" in
+    git@github.com:*) slug="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) slug="${url#ssh://git@github.com/}" ;;
+    https://github.com/*) slug="${url#https://github.com/}" ;;
+    http://github.com/*) slug="${url#http://github.com/}" ;;
+    *) return 0 ;;
+  esac
+  slug="${slug%.git}"
+  slug="${slug%/}"
+  [[ $slug == */* ]] || return 0
+  printf '%s' "$slug"
+}
+
+# Record digest -> repo root. The digest is a one-way hash of the repo path, so
+# without this nothing can tell whether a state file's repo still exists -- which
+# is exactly why orphaned .viewed.json files pile up with no way to sweep them.
+manifest_record() {
+  local root="$1" digest mf tmp
+  command -v jq >/dev/null 2>&1 || return 0
+  digest=$(digest_for "$root")
+  mf=$(manifest_path)
+  mkdir -p "$(dirname "$mf")"
+  [[ -f $mf ]] || printf '{}\n' >"$mf"
+  tmp=$(mktemp "$(dirname "$mf")/.repos.XXXXXX")
+  if jq --arg d "$digest" --arg r "$root" '. + {($d): $r}' "$mf" >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$mf"
+  else
+    rm -f "$tmp" # a corrupt manifest must never fail a plan write
+  fi
+}
+
+# Same candidate order as `show`.
+resolve_plan() {
+  local root="$1"
+  shift
+  local candidates=() c
+  if has_flag --in-repo "$@"; then
+    c=$(in_repo_plan_path "$root")
+    [[ -f $c ]] || die "no plan at $c (--in-repo)"
+    printf '%s' "$c"
+    return 0
+  fi
+  [[ -n ${HUNK_REVIEW_PLAN:-} ]] && candidates+=("$HUNK_REVIEW_PLAN")
+  candidates+=("$(in_repo_plan_path "$root")" "$(state_plan_path "$root")")
+  for c in "${candidates[@]}"; do
+    if [[ -f $c ]]; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  {
+    echo "$PROG: no review plan found. Looked at:"
+    printf '  %s\n' "${candidates[@]}"
+  } >&2
+  exit 1
+}
+
+# One group per line: slug, badge tier, collapsed flag, then base64 title and
+# summary (they carry arbitrary text; base64 keeps @tsv honest).
+#
+# Ordering and importance mirror the review-plan extension's plan.ts exactly --
+# absent importance defaults to 50, values clamp to 0..100, groups sort by
+# [hidden, importance, declaration order]. The HTML and the TUI must not be able
+# to disagree about which group leads.
+GROUPS_JQ='
+  [ .groups[]? | {
+      title: .title,
+      summary: (.summary // ""),
+      imp: (if (.importance | type) == "number"
+            then (.importance | if . < 0 then 0 elif . > 100 then 100 else . end)
+            else 50 end),
+      hidden: (.hidden == true),
+      collapsed: (.collapsed == true)
+    } ]
+  | to_entries | map(.value + {order: .key})
+  | sort_by([ (if .hidden then 1 else 0 end), .imp, .order ])
+  | .[]
+  | . as $g
+  | ($g.title | ascii_downcase | gsub("[^a-z0-9]+"; "-")
+              | gsub("^-+"; "") | gsub("-+$"; "")) as $slug
+  | (if $g.imp <= 2 then "critical" elif $g.imp <= 5 then "review" else "skim" end) as $tier
+  | [ $slug, $tier,
+      (if ($g.collapsed or $tier == "skim") then "1" else "0" end),
+      ($g.title | @base64), ($g.summary | @base64) ]
+  | @tsv
+'
+
+cmd_report_dir() {
+  local root plan dir slug
+  root=$(repo_root)
+  plan=$(resolve_plan "$root" "$@")
+  dir=$(report_dir_for "$plan")
+
+  if has_flag --init "$@"; then
+    command -v jq >/dev/null 2>&1 || die "jq is required to scaffold a report directory"
+    mkdir -p "$dir"
+    if [[ ! -f "$dir/meta.json" ]]; then
+      cat >"$dir/meta.json" <<'META'
+{
+  "title": "",
+  "subtitle": "",
+  "docs": []
+}
+META
+    fi
+    [[ -f "$dir/_tldr.md" ]] || : >"$dir/_tldr.md"
+    while IFS=$'\t' read -r slug _ _ _ _; do
+      [[ -n $slug ]] || continue
+      [[ -f "$dir/$slug.md" ]] || : >"$dir/$slug.md"
+    done < <(jq -r "$GROUPS_JQ" "$plan")
+    echo "$PROG: scaffolded $dir" >&2
+  fi
+
+  printf '%s\n' "$dir"
+}
+
+cmd_render() {
+  local root plan dir assets out outdir gh tmp
+  root=$(repo_root)
+  command -v jq >/dev/null 2>&1 || die "jq is required to render the report"
+
+  plan=$(resolve_plan "$root" "$@")
+  dir=$(report_dir_for "$plan")
+  assets=$(assets_dir)
+  out=$(html_path_for "$plan")
+
+  local args=("$@") i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == "-o" ]]; then
+      out="${args[i + 1]:-}"
+      [[ -n $out ]] || die "-o requires a path argument"
+    fi
+  done
+
+  [[ -d $dir ]] ||
+    die "no report directory at $dir -- run '$PROG report-dir --init' and write the body files first"
+  [[ -f "$dir/meta.json" ]] || die "no meta.json in $dir"
+
+  gh=$(github_slug)
+  outdir=$(dirname "$out")
+  mkdir -p "$outdir"
+
+  # Pass 1: group metadata, and the slug -> title map the doc back-links need.
+  local -a g_slug=() g_tier=() g_coll=() g_title=() g_summary=()
+  local slug tier coll bt bs
+  while IFS=$'\t' read -r slug tier coll bt bs; do
+    [[ -n $slug ]] || continue
+    g_slug+=("$slug")
+    g_tier+=("$tier")
+    g_coll+=("$coll")
+    g_title+=("$(b64d "$bt")")
+    g_summary+=("$(b64d "$bs")")
+  done < <(jq -r "$GROUPS_JQ" "$plan")
+
+  [[ ${#g_slug[@]} -gt 0 ]] || die "the plan has no groups to render"
+
+  # Docs declared in meta.json.
+  local -a d_slug=() d_id=() d_path=() d_cited=()
+  local bid bpath bcited did
+  while IFS=$'\t' read -r bid bpath bcited; do
+    [[ -n $bid ]] || continue
+    did=$(b64d "$bid")
+    d_id+=("$did")
+    d_path+=("$(b64d "$bpath")")
+    d_cited+=("$(b64d "$bcited")")
+    d_slug+=("doc-$(slugify "$did")")
+  done < <(jq -r '.docs[]? | [ (.id | @base64), (.path | @base64), ((.citedBy // "") | @base64) ] | @tsv' "$dir/meta.json")
+
+  local title subtitle
+  title=$(jq -r '.title // ""' "$dir/meta.json")
+  subtitle=$(jq -r '.subtitle // ""' "$dir/meta.json")
+  [[ -n $title ]] || title="Review"
+
+  tmp=$(mktemp "$outdir/.report.XXXXXX")
+
+  {
+    printf '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+    printf '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    printf '<title>%s</title>\n<style>\n' "$(esc "$title")"
+    cat "$assets/report.css"
+    printf '</style>\n</head>\n<body>\n'
+
+    # ── nav ──
+    printf '<nav class="top"><div class="nav-inner">\n'
+    printf '  <a href="#" data-nav="review">Review</a>\n'
+    if [[ ${#d_slug[@]} -gt 0 ]]; then
+      printf '  <span class="nav-sep">|</span>\n'
+      for ((i = 0; i < ${#d_slug[@]}; i++)); do
+        printf '  <a href="#%s" data-nav="%s">%s</a>\n' \
+          "${d_slug[i]}" "${d_slug[i]}" "$(esc "${d_id[i]}")"
+      done
+    fi
+    printf '</div></nav>\n<main>\n'
+
+    # ── review pane ──
+    printf '<div class="pane" id="pane-review"><div class="wrap">\n'
+    printf '  <h1>%s</h1>\n' "$(esc "$title")"
+    [[ -n $subtitle ]] && printf '  <p class="subtitle">%s</p>\n' "$(esc "$subtitle")"
+
+    if [[ -s "$dir/_tldr.md" ]]; then
+      printf '  <div class="tldr"><h3>TL;DR</h3><div class="md">'
+      printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_tldr.md")"
+      printf '</div></div>\n'
+    fi
+
+    printf '  <nav class="toc"><h3>Sections</h3><ol>\n'
+    for ((i = 0; i < ${#g_slug[@]}; i++)); do
+      printf '    <li><a href="#group-%s">%s</a>' "${g_slug[i]}" "$(esc "${g_title[i]}")"
+      [[ -n ${g_summary[i]} ]] &&
+        printf '<span class="toc-summary">%s</span>' "$(esc "${g_summary[i]}")"
+      printf '</li>\n'
+    done
+    printf '  </ol></nav>\n'
+
+    for ((i = 0; i < ${#g_slug[@]}; i++)); do
+      local body="$dir/${g_slug[i]}.md" notes="$dir/${g_slug[i]}.notes.md"
+      local label="${g_tier[i]}"
+      case "$label" in
+        critical) label="Critical" ;;
+        review) label="Review" ;;
+        *) label="Skim" ;;
+      esac
+
+      printf '  <section class="group" id="group-%s">\n' "${g_slug[i]}"
+      [[ ${g_coll[i]} == 1 ]] && printf '    <details>\n    <summary>\n'
+      printf '    <h2><span class="badge %s">%s</span> %s</h2>\n' \
+        "${g_tier[i]}" "$label" "$(esc "${g_title[i]}")"
+      [[ ${g_coll[i]} == 1 ]] && printf '    </summary>\n'
+      [[ -n ${g_summary[i]} ]] &&
+        printf '    <p class="group-summary">%s</p>\n' "$(esc "${g_summary[i]}")"
+
+      if [[ -s $body ]]; then
+        printf '    <div class="md"><script type="text/markdown">%s</script></div>\n' "$(b64e "$body")"
+      else
+        printf '    <p class="no-writeup">No writeup was written for this group.</p>\n'
+        echo "$PROG: no body for group '${g_title[i]}' (expected $body)" >&2
+      fi
+
+      if [[ -s $notes ]]; then
+        printf '    <div class="notes"><h3>Review notes</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$notes")"
+        printf '</div></div>\n'
+      fi
+
+      [[ ${g_coll[i]} == 1 ]] && printf '    </details>\n'
+      printf '  </section>\n'
+    done
+
+    printf '  <footer class="gen">Generated %s</footer>\n' "$(date '+%Y-%m-%d %H:%M')"
+    printf '</div></div>\n'
+
+    # ── doc panes ──
+    for ((i = 0; i < ${#d_slug[@]}; i++)); do
+      printf '<div class="pane" data-doc="%s" hidden><div class="wrap"><article class="doc">\n' "${d_slug[i]}"
+      printf '  <h1>%s</h1>\n' "$(esc "${d_id[i]}")"
+      printf '  <p class="doc-src">%s</p>\n' "$(esc "${d_path[i]}")"
+      if [[ -f "$root/${d_path[i]}" ]]; then
+        printf '  <div class="md"><script type="text/markdown">%s</script></div>\n' \
+          "$(b64e "$root/${d_path[i]}")"
+      else
+        printf '  <div class="missing">Not found in the working tree: <code>%s</code></div>\n' \
+          "$(esc "${d_path[i]}")"
+        echo "$PROG: referenced doc not found: ${d_path[i]}" >&2
+      fi
+      if [[ -n ${d_cited[i]} ]]; then
+        local back="${d_cited[i]}" backtitle="${d_cited[i]}" j
+        for ((j = 0; j < ${#g_slug[@]}; j++)); do
+          [[ ${g_slug[j]} == "$back" ]] && backtitle="${g_title[j]}"
+        done
+        printf '  <a class="back-link" href="#group-%s">&larr; back to %s</a>\n' \
+          "$back" "$(esc "$backtitle")"
+      else
+        printf '  <a class="back-link" href="#">&larr; back to review</a>\n'
+      fi
+      printf '</article></div></div>\n'
+    done
+
+    printf '</main>\n'
+    printf '<script>window.__REPORT__ = %s;</script>\n' \
+      "$(jq -nc --arg r "$gh" '{repo: (if $r == "" then null else $r end)}')"
+    printf '<script src="marked.min.js"></script>\n'
+    printf '<script src="mermaid.min.js"></script>\n'
+    printf '<script>\n'
+    cat "$assets/report.js"
+    printf '</script>\n</body>\n</html>\n'
+  } >"$tmp"
+
+  mv -f "$tmp" "$out"
+
+  local a
+  for a in marked.min.js mermaid.min.js; do
+    [[ -f "$outdir/$a" ]] || cp "$assets/$a" "$outdir/$a"
+  done
+
+  manifest_record "$root"
+  echo "$PROG: wrote $out"
+}
+
+# ── garbage collection ───────────────────────────────────────────────────────
+
+# Remove every artifact belonging to one digest.
+gc_remove_family() {
+  local base="$1" dry="$2" target
+  for target in "$base.json" "$base.html" "$base.viewed.json" "$base.sidecar.json"; do
+    [[ -e $target ]] || continue
+    if [[ $dry == 1 ]]; then echo "  would remove $target"; else rm -f "$target"; fi
+  done
+  if [[ -d "$base.report" ]]; then
+    if [[ $dry == 1 ]]; then echo "  would remove $base.report/"; else rm -rf "$base.report"; fi
+  fi
+}
+
+cmd_gc() {
+  local sdir mf dry=0 days=30 args=("$@") i
+  sdir="$(state_dir)/hunk/review-plan"
+  mf=$(manifest_path)
+
+  has_flag --dry-run "$@" && dry=1
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == "--older-than" ]]; then
+      days="${args[i + 1]:-}"
+      [[ $days =~ ^[0-9]+$ ]] || die "--older-than requires a number of days"
+    fi
+  done
+
+  [[ -d $sdir ]] || {
+    echo "$PROG: nothing to collect ($sdir does not exist)"
+    return 0
+  }
+
+  local -a doomed=() reasons=()
+  local f base digest root
+
+  # Pass 1: any artifact whose digest has no plan is dead by definition.
+  for f in "$sdir"/*.viewed.json "$sdir"/*.html "$sdir"/*.sidecar.json "$sdir"/*.report; do
+    [[ -e $f ]] || continue
+    base="${f%.viewed.json}"
+    base="${base%.sidecar.json}"
+    base="${base%.html}"
+    base="${base%.report}"
+    [[ -f "$base.json" ]] && continue
+    doomed+=("$base")
+    reasons+=("orphan: no plan file")
+  done
+
+  # Pass 2: the manifest says which repo a digest came from, so a deleted repo
+  # becomes collectable rather than an unreadable hash.
+  if [[ -f $mf ]] && command -v jq >/dev/null 2>&1; then
+    while IFS=$'\t' read -r digest root; do
+      [[ -n $digest ]] || continue
+      [[ -d "$root/.git" || -f "$root/.git" ]] && continue
+      base="$sdir/$digest"
+      [[ -f "$base.json" ]] || continue
+      doomed+=("$base")
+      reasons+=("repo is gone: $root")
+    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "$mf" 2>/dev/null)
+  fi
+
+  # Pass 3: age. The plan is regenerated every run, not a durable note.
+  while IFS= read -r f; do
+    [[ -n $f ]] || continue
+    base="${f%.json}"
+    doomed+=("$base")
+    reasons+=("older than $days days")
+  done < <(find "$sdir" -maxdepth 1 -name '*.json' ! -name 'repos.json' ! -name '*.viewed.json' ! -name '*.sidecar.json' -mtime "+$days" 2>/dev/null)
+
+  # A digest can be caught by more than one pass -- an orphaned .html and an
+  # orphaned .viewed.json share a base, and a gone repo can also be old. Keep
+  # the first reason so the listing reads as one line per digest.
+  local -A seen=()
+  local -a uniq_doomed=() uniq_reasons=()
+  for ((i = 0; i < ${#doomed[@]}; i++)); do
+    [[ -n ${seen[${doomed[i]}]:-} ]] && continue
+    seen[${doomed[i]}]=1
+    uniq_doomed+=("${doomed[i]}")
+    uniq_reasons+=("${reasons[i]}")
+  done
+  doomed=("${uniq_doomed[@]:-}")
+  reasons=("${uniq_reasons[@]:-}")
+  [[ -n ${doomed[0]:-} ]] || doomed=()
+
+  if [[ ${#doomed[@]} -eq 0 ]]; then
+    echo "$PROG: nothing to collect in $sdir"
+    return 0
+  fi
+
+  echo "$PROG: collectable review-plan state in $sdir"
+  for ((i = 0; i < ${#doomed[@]}; i++)); do
+    printf '  %s  (%s)\n' "$(basename "${doomed[i]}")" "${reasons[i]}"
+  done
+
+  if [[ $dry == 1 ]]; then
+    echo "$PROG: --dry-run, nothing removed"
+    return 0
+  fi
+  if ! has_flag --yes "$@"; then
+    local reply
+    read -r -p "Remove these? [y/N] " reply || reply="n"
+    [[ $reply =~ ^[Yy]$ ]] || die "aborted, nothing removed"
+  fi
+
+  for ((i = 0; i < ${#doomed[@]}; i++)); do
+    gc_remove_family "${doomed[i]}" 0
+    if [[ -f $mf ]] && command -v jq >/dev/null 2>&1; then
+      local tmp
+      tmp=$(mktemp "$sdir/.repos.XXXXXX")
+      if jq --arg d "$(basename "${doomed[i]}")" 'del(.[$d])' "$mf" >"$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$mf"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  done
+  echo "$PROG: removed ${#doomed[@]} plan famil$([[ ${#doomed[@]} -eq 1 ]] && echo y || echo ies)"
+
+  # Shared assets are only dead once the last report that could load them is.
+  if ! compgen -G "$sdir/*.html" >/dev/null; then
+    local a
+    for a in marked.min.js mermaid.min.js; do
+      [[ -f "$sdir/$a" ]] && rm -f "$sdir/$a" && echo "$PROG: removed $sdir/$a (no reports left)"
+    done
+  fi
 }
 
 main() {
@@ -311,6 +813,9 @@ main() {
     write) cmd_write "$@" ;;
     show) cmd_show "$@" ;;
     sidecar) cmd_sidecar "$@" ;;
+    report-dir) cmd_report_dir "$@" ;;
+    render) cmd_render "$@" ;;
+    gc) cmd_gc "$@" ;;
     clear) cmd_clear "$@" ;;
     viewed) cmd_viewed "$@" ;;
     -h | --help) usage ;;
