@@ -110,6 +110,20 @@ article.doc .md h1 { font-size: 1.4rem; margin: 1.4rem 0 0.5rem; }
 article.doc .md h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; display: block; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
 article.doc .md h3 { font-size: 1rem; margin: 1.2rem 0 0.4rem; color: var(--text); text-transform: none; letter-spacing: 0; }
 article.doc .md h4 { font-size: 0.92rem; margin: 1rem 0 0.3rem; color: var(--muted); }
+/* YAML frontmatter, lifted out of the markdown and shown as fields */
+dl.fm {
+  display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 0.9rem;
+  margin: 0 0 1.5rem; padding: 0.8rem 1rem;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 0.85rem;
+}
+dl.fm dt { color: var(--muted); font-weight: 600; white-space: nowrap; }
+dl.fm dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dl.fm dd.fm-status { font-weight: 700; }
+dl.fm details.fm-long > summary { cursor: pointer; color: var(--muted); }
+dl.fm details.fm-long > summary:hover { color: var(--text); }
+dl.fm details.fm-long > div { margin-top: 0.4rem; }
+
 .back-link { display: inline-block; margin-top: 1.5rem; padding-top: 0.8rem; border-top: 1px solid var(--border); width: 100%; font-size: 0.9rem; }
 
 .missing { background: var(--crit-bg); border: 1px solid var(--crit-border); color: var(--crit-text); border-radius: 8px; padding: 0.8rem 1rem; font-size: 0.9rem; }

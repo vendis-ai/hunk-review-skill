@@ -53,6 +53,19 @@ git init -q .
 git remote add origin git@github.com:acme/widgets.git
 
 cat >docs/adr/0001-decision.md <<'MD'
+---
+status: accepted
+date: 2026-06-23
+deciders: [alice, bob]
+tags:
+  - enrichment
+  - pdl
+decision_summary: "A very long field of the kind real ADRs carry, running well past any sensible inline length so that it must collapse rather than bury the document it describes. It mentions `reserve` in backticks and **bold** text, both of which should render as markup rather than as literal punctuation, because that is how these fields are actually written in practice and a wall of backticks reads badly."
+forbids: |
+  rg -n "legacy_path" app/
+  - a literal dash line, not a list bullet
+---
+
 # The Decision
 
 ## Rationale
@@ -190,6 +203,24 @@ JSON
   assert_in '<table>' "$TMP/dom.html" "converts a GFM table"
   assert_in 'aria-roledescription="flowchart' "$TMP/dom.html" "renders a fenced mermaid diagram"
   assert_in 'id="pane-review" hidden' "$TMP/dom.html" "routing hides the review pane on a doc hash"
+
+  # Frontmatter: `---\nstatus: ...\n---` otherwise parses as a setext heading,
+  # rendering the metadata larger than the document's own title.
+  assert_in '<dl class="fm">' "$TMP/dom.html" "frontmatter renders as a field list"
+  assert_in '<dd class="fm-status">accepted</dd>' "$TMP/dom.html" "frontmatter picks out status"
+  assert_in '>alice, bob</dd>' "$TMP/dom.html" "frontmatter flattens an inline array"
+  assert_in '>enrichment, pdl</dd>' "$TMP/dom.html" "frontmatter flattens a block list"
+  assert_in '<details class="fm-long">' "$TMP/dom.html" "a very long field collapses"
+  assert_in '<code>reserve</code>' "$TMP/dom.html" "markdown inside a field value is rendered"
+  # The collapsed peek is plain text, so emphasis markers are stripped not shown.
+  assert_not_in '**bold** text, both' "$TMP/dom.html" "the collapsed peek strips markdown markers"
+  # `key: |` is a block scalar: the value is the indented block, never "|".
+  assert_not_in '<dd class="fm-short">|</dd>' "$TMP/dom.html" "a block scalar is not rendered as a bare pipe"
+  assert_in 'legacy_path' "$TMP/dom.html" "a block scalar keeps its content"
+  assert_in 'a literal dash line' "$TMP/dom.html" "a dash inside a block scalar stays literal"
+  assert_not_in '<h2>status: accepted' "$TMP/dom.html" "frontmatter is not a setext heading"
+  assert_in '<h1>The Decision</h1>' "$TMP/dom.html" "the document title survives frontmatter"
+
   "$HUNK_PLAN" clear --yes >/dev/null 2>&1
 else
   echo

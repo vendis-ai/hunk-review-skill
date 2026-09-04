@@ -44,6 +44,150 @@
     }
   }
 
+  /* ── frontmatter ──────────────────────────────────────────────────────── */
+
+  // ADRs and RFCs routinely open with a YAML block, and markdown has no idea
+  // what it is. `---\nstatus: accepted\ndate: ...\n---` parses as a thematic
+  // break followed by a *setext heading*, so the metadata renders larger than
+  // the document's own title. Split it off before parsing and present it as
+  // what it is: a small table of fields.
+  var FM_MAX_LINES = 80; // a `---` this far down is a real horizontal rule
+
+  function splitFrontmatter(src) {
+    if (!/^---[ \t]*\r?\n/.test(src)) return null;
+    var lines = src.split(/\r?\n/);
+    for (var i = 1; i < lines.length && i <= FM_MAX_LINES; i++) {
+      if (/^(---|\.\.\.)[ \t]*$/.test(lines[i])) {
+        return { meta: lines.slice(1, i), body: lines.slice(i + 1).join('\n') };
+      }
+    }
+    return null; // unterminated: it was an ordinary rule after all
+  }
+
+  function unquote(v) {
+    var t = v.trim();
+    if (t.length > 1 && ((t[0] === '"' && t.slice(-1) === '"') || (t[0] === "'" && t.slice(-1) === "'"))) {
+      return t.slice(1, -1);
+    }
+    return t;
+  }
+
+  // A deliberate YAML subset: `key: scalar`, `key: [a, b]`, and a key followed
+  // by an indented `- item` block. Anything else is kept as its raw text rather
+  // than guessed at -- this is a display aid, not a YAML implementation.
+  function parseFrontmatter(lines) {
+    var pairs = [];
+    var current = null;
+    var inBlock = false; // `key: |` / `key: >` -- the indented lines are literal
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (!line.trim()) continue;
+      if (!inBlock && /^\s*#/.test(line)) continue;
+
+      var indented = /^\s+\S/.test(line);
+      if (indented && current) {
+        var item = line.trim();
+        // A `- ` in a block scalar is literal text, not a list bullet.
+        current.push(!inBlock && item.indexOf('- ') === 0 ? item.slice(2).trim() : item);
+        continue;
+      }
+
+      var m = line.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/);
+      if (!m) continue;
+      var key = m[1];
+      var raw = m[2].trim();
+
+      if (raw === '' || /^[|>][-+]?$/.test(raw)) {
+        // Block scalar or a nested/list key: the value is the indented block
+        // underneath. Taking `|` as the value is how these rendered as a stray
+        // pipe character.
+        current = [];
+        inBlock = raw !== '';
+        pairs.push([key, current]);
+      } else if (raw[0] === '[' && raw.slice(-1) === ']') {
+        current = null;
+        inBlock = false;
+        pairs.push([key, raw.slice(1, -1).split(',').map(unquote).filter(Boolean)]);
+      } else {
+        current = null;
+        inBlock = false;
+        pairs.push([key, [unquote(raw)]]);
+      }
+    }
+    return pairs.filter(function (p) { return p[1].length > 0; });
+  }
+
+  // The collapsed peek is one line of plain text. Truncating markdown would
+  // leave unmatched `**`, so strip the markers rather than parse them.
+  function plainPeek(text) {
+    return text
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/\*\*([^*]*)\*\*/g, '$1')
+      .replace(/__([^_]*)__/g, '$1')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // Real ADR frontmatter is not all short scalars. A `decision_summary` can run
+  // to several thousand characters on one line, which would bury the document
+  // it describes -- so anything past this collapses behind its own opening.
+  var FM_INLINE_MAX = 220;
+  var FM_PEEK = 110;
+
+  // Values carry markdown (`code`, **bold**) often enough that literal
+  // backticks read badly, so they go through the inline parser -- and then
+  // through the same scrub as everything else, because this text comes from a
+  // file in the diff under review.
+  function fmValueInto(el, text) {
+    if (typeof marked === 'undefined' || !marked.parseInline) {
+      el.textContent = text;
+      return;
+    }
+    var staging = document.createElement('div');
+    try {
+      staging.innerHTML = marked.parseInline(text);
+    } catch (e) {
+      el.textContent = text;
+      return;
+    }
+    scrub(staging);
+    el.replaceChildren.apply(el, Array.prototype.slice.call(staging.childNodes));
+  }
+
+  function frontmatterNode(pairs) {
+    var dl = document.createElement('dl');
+    dl.className = 'fm';
+    for (var i = 0; i < pairs.length; i++) {
+      var key = pairs[i][0];
+      var value = pairs[i][1].join(', ');
+
+      var dt = document.createElement('dt');
+      dt.textContent = key;
+      var dd = document.createElement('dd');
+
+      if (value.length > FM_INLINE_MAX) {
+        var details = document.createElement('details');
+        details.className = 'fm-long';
+        var summary = document.createElement('summary');
+        summary.textContent = plainPeek(value).slice(0, FM_PEEK).replace(/\s+\S*$/, '') + '…';
+        var full = document.createElement('div');
+        fmValueInto(full, value);
+        details.appendChild(summary);
+        details.appendChild(full);
+        dd.appendChild(details);
+      } else {
+        fmValueInto(dd, value);
+        dd.className = 'fm-short';
+      }
+      if (key.toLowerCase() === 'status') dd.className = 'fm-status';
+
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+    return dl;
+  }
+
   // Inline HTML has to survive -- <pre class="mermaid"> and <details> are the
   // whole reason bodies are markdown-with-passthrough rather than plain
   // markdown. So strip the executable subset instead of escaping everything.
@@ -91,6 +235,18 @@
         holders[i].className += ' missing';
         continue;
       }
+      // Frontmatter is a doc-file convention, not something a group body ever
+      // carries -- so a leading `---` in agent prose stays an honest rule.
+      var fmNode = null;
+      if (holders[i].closest && holders[i].closest('article.doc')) {
+        var split = splitFrontmatter(src);
+        if (split) {
+          var pairs = parseFrontmatter(split.meta);
+          if (pairs.length) fmNode = frontmatterNode(pairs);
+          src = split.body;
+        }
+      }
+
       // Parse detached, scrub, then adopt -- so nothing removable is ever live
       // in the document, however briefly.
       var staging = document.createElement('div');
@@ -98,6 +254,7 @@
       scrub(staging);
       promoteMermaidFences(staging);
       var adopted = Array.prototype.slice.call(staging.childNodes);
+      if (fmNode) adopted.unshift(fmNode);
       holders[i].replaceChildren.apply(holders[i], adopted);
     }
   }
