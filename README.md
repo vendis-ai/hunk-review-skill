@@ -3,9 +3,9 @@
 Turn a large diff or PR into a **grouped, prioritised review plan** you open before reading any
 code — plus a skimmable HTML writeup of what the branch actually does.
 
-Two agent skills, a CLI, and a [Hunk](https://github.com/modem-dev/hunk) extension. An agent reads
-the changeset, decides what matters, and writes a plan; Hunk then presents the diff in that order,
-grouped by topic, with a handful of annotations on the hunks that carry a real decision.
+Two agent skills, a CLI, and two [Hunk](https://github.com/modem-dev/hunk) extensions. An agent
+reads the changeset, decides what matters, and writes a plan; Hunk then presents the diff in that
+order, grouped by topic, with a handful of annotations on the hunks that carry a real decision.
 
 The point is what it *doesn't* show you. A branch with a genuine auth fix buried inside a
 2,000-file rename reads as 2,000 files. With a plan it reads as "security boundary, 4 files" —
@@ -19,6 +19,7 @@ and everything else sinks.
 | `skills/hunk-handle-notes/` | Reads and acts on review notes you left in a live Hunk session. |
 | `bin/hunk-plan` | CLI to write, read, convert, and clear the plan file. |
 | `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
+| `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
 
 ## Requirements
 
@@ -48,7 +49,7 @@ itself a symlink back into this repo. Re-running it is safe.
 | Both skills | `~/.agents/skills/<name>` | The cross-agent location. Codex, OpenCode, Cursor, Cline, Warp, Zed, Gemini CLI and Copilot read it directly — no per-agent setup. |
 | Both skills | `~/.claude/skills/<name>` | Claude Code is the one common harness that reads only its own directory. |
 | `hunk-plan` | `~/.local/bin/hunk-plan` | The skill invokes it as a bare command, so it has to be on your real PATH. |
-| `review-plan` | *nowhere* — see below | Hunk is pointed at the checkout by absolute path. |
+| Both extensions | *nowhere* — see below | Hunk is pointed at the checkout by absolute path. |
 
 If you already have an `[extensions]` section in `~/.config/hunk/config.toml`, the installer
 **will not edit it**. It prints the exact line to add instead. TOML forbids a second `[extensions]`
@@ -65,9 +66,10 @@ cd hunk-review-skill && git pull && ./install.sh
 read straight out of this checkout, so changed content is live the next time you start an agent or
 launch Hunk — nothing to reinstall.
 
-Re-run `install.sh` as well whenever a release **adds a skill**. Nothing links a new one on its
-own, and the failure is silent: it just never shows up. The installer is idempotent and prints
-`(already linked)` for everything unchanged, so running both every time is the safe habit.
+Re-run `install.sh` as well whenever a release **adds a skill or an extension**. Nothing links a
+new skill on its own, and nothing adds a new extension to Hunk's `paths`; both failures are silent,
+the thing just never shows up. The installer is idempotent and prints `(already linked)` for
+everything unchanged, so running both every time is the safe habit.
 
 ⚠ **Don't move or rename the checkout.** The installed symlinks and the absolute path in
 `~/.config/hunk/config.toml` both point here. If you do move it, re-run `install.sh` from the new
@@ -101,7 +103,9 @@ Three dots, not two. `..` also drags in everything that landed on the base branc
 which can multiply the diff several times over and fills the pane with files the plan says nothing
 about.
 
-`}` and `{` jump between annotated hunks; `v` marks a file reviewed.
+`}` and `{` jump between annotated hunks; `v` marks a file reviewed. `y` copies the selected file's
+path, `Y` picks between the other spellings of it, and `ctrl+y` copies an `@path#L42` reference to
+paste back into an agent — see [`extension/copy-path/`](extension/copy-path/README.md).
 
 Left notes in Hunk and want them acted on?
 
@@ -128,11 +132,11 @@ Pointing at the real path works on every version, so the installer does that unc
 
 ## Contributing
 
-The extension's dev dependencies are not installed by `install.sh` — Hunk injects its own React and
-OpenTUI at load time, so the runtime doesn't need them, and they're ~450 MB.
+Neither extension's dev dependencies are installed by `install.sh`. Hunk injects its own React and
+OpenTUI at load time, so the runtime never needs them — and for `review-plan` they're ~450 MB.
 
 ```sh
-cd extension/review-plan
+cd extension/review-plan   # or extension/copy-path
 bun install
 bun test
 bun run typecheck
@@ -140,6 +144,8 @@ bun run typecheck
 
 `extension/review-plan/README.md` documents the plan JSON schema, the annotation model, key
 bindings, and where plan and viewed state live on disk.
+`extension/copy-path/README.md` documents its three commands, the path forms it offers, and how it
+reaches the clipboard over SSH.
 
 ## License
 

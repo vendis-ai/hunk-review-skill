@@ -1,0 +1,16 @@
+{
+  "name": "hunk-copy-path",
+  "version": "1.0.0",
+  "description": "Copies the selected file's path from a hunk review -- repo-relative, absolute, filename, or as an @path#Lx reference.",
+  "private": true,
+  "type": "module",
+  "hunk": { "extensions": ["./index.ts"], "apiVersion": 8 },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "hunkdiff": "^0.20.0",
+    "bun-types": "^1.4.0"
+  }
+}

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Install the hunk-review skills, the hunk-plan CLI, and the review-plan
-# extension from this checkout.
+# Install the hunk-review skills, the hunk-plan CLI, and the hunk extensions
+# from this checkout.
 #
 # Everything is installed as a symlink into this repository, so `git pull` is
 # all that is needed to update -- with one deliberate exception: the hunk
-# extension is NOT symlinked anywhere. It is loaded from its real path here,
-# via an absolute entry in hunk's own config. See the config step below for
-# why that is a correctness requirement rather than a preference.
+# extensions are NOT symlinked anywhere. They are loaded from their real paths
+# here, via absolute entries in hunk's own config. See the config step below
+# for why that is a correctness requirement rather than a preference.
 #
 # Re-running is safe. Nothing is overwritten unless it is a symlink this
 # script owns.
@@ -122,8 +122,9 @@ case ":$PATH:" in
   *) warn "$BIN_DIR is not on your PATH -- add it, or hunk-plan will not resolve" ;;
 esac
 
-# ── 3. review-plan extension ─────────────────────────────────────────────────
-# NOT symlinked, on purpose, and this is a correctness requirement.
+# ── 3. extensions ────────────────────────────────────────────────────────────
+# NOT symlinked, on purpose, and for review-plan this is a correctness
+# requirement.
 #
 # hunk serves `react`, `@opentui/*` and `hunkdiff/extension` to an extension by
 # registering a Bun onLoad plugin and rewriting those specifiers to `hunk-host:`
@@ -138,22 +139,38 @@ esac
 #   node_modules absent  -> "Cannot find module 'react/jsx-dev-runtime'".
 # Pointing hunk at the real path makes entry path and realpath identical.
 #
+# copy-path cannot hit that trap -- its only hunk import is an `import type`,
+# erased at transpile time, so there is nothing for the hook to rewrite. It is
+# registered by real path anyway: one rule for every extension beats a
+# per-extension exception that has to be re-derived each time one is added.
+#
 # Fixed upstream in hunk 0.21.0 (registerSourceRoot there registers both the
 # literal directory and its canonical path). Until that is what everyone runs,
 # the real path is the only spelling that works on every version.
-head_ 'review-plan extension'
+head_ 'Extensions'
 
-EXT_PATH="$REPO/extension/review-plan"
 HUNK_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/hunk/config.toml"
+
+EXT_PATHS=()
+for src in "$REPO"/extension/*/; do
+  EXT_PATHS+=("${src%/}")
+done
+
+# The body of the TOML `paths` array: `"a", "b"`.
+PATHS_TOML=""
+for ext in "${EXT_PATHS[@]}"; do
+  [ -n "$PATHS_TOML" ] && PATHS_TOML+=", "
+  PATHS_TOML+="\"$ext\""
+done
 
 read -r -d '' CONFIG_BLOCK <<TOML || true
 [extensions]
 enabled = true
 
-# review-plan is loaded from its REAL path, never through a symlink -- hunk's
-# Bun onLoad hook matches on realpath and silently fails to fire otherwise.
+# Loaded from their REAL paths, never through a symlink -- hunk's Bun onLoad
+# hook matches on realpath and silently fails to fire otherwise.
 # Absolute, because hunk does not expand ~ in this key.
-paths = ["$EXT_PATH"]
+paths = [$PATHS_TOML]
 TOML
 
 if [ ! -e "$HUNK_CONFIG" ]; then
@@ -164,24 +181,39 @@ if [ ! -e "$HUNK_CONFIG" ]; then
     printf '%s\n' "$CONFIG_BLOCK" > "$HUNK_CONFIG"
     ok "created $(t "$HUNK_CONFIG")"
   fi
-elif grep -qF -- "$EXT_PATH" "$HUNK_CONFIG"; then
-  ok "$(t "$HUNK_CONFIG") already points at this checkout"
-elif ! grep -qE '^[[:space:]]*\[extensions\]' "$HUNK_CONFIG"; then
-  if would; then
-    ok "would append an [extensions] section to $(t "$HUNK_CONFIG")"
-  else
-    printf '\n%s\n' "$CONFIG_BLOCK" >> "$HUNK_CONFIG"
-    ok "appended an [extensions] section to $(t "$HUNK_CONFIG")"
-  fi
 else
-  # An [extensions] section already exists. TOML forbids a second one, and
-  # rewriting the existing `paths` array from a shell script is exactly how the
-  # silent-failure mode above gets introduced. Hand it to the user instead.
-  warn "$(t "$HUNK_CONFIG") already has an [extensions] section."
-  warn 'Not editing it. Add this checkout to that section by hand:'
-  printf '\n    enabled = true\n    paths = ["%s"]\n\n' "$EXT_PATH"
-  warn 'If `paths` is already set, append to the existing array rather than'
-  warn 'replacing it. The path must be absolute -- hunk does not expand ~.'
+  MISSING=()
+  for ext in "${EXT_PATHS[@]}"; do
+    if grep -qF -- "$ext" "$HUNK_CONFIG"; then
+      ok "$(basename "$ext") (already in $(t "$HUNK_CONFIG"))"
+    else
+      MISSING+=("$ext")
+    fi
+  done
+
+  if [ ${#MISSING[@]} -gt 0 ]; then
+    if ! grep -qE '^[[:space:]]*\[extensions\]' "$HUNK_CONFIG"; then
+      if would; then
+        ok "would append an [extensions] section to $(t "$HUNK_CONFIG")"
+      else
+        printf '\n%s\n' "$CONFIG_BLOCK" >> "$HUNK_CONFIG"
+        ok "appended an [extensions] section to $(t "$HUNK_CONFIG")"
+      fi
+    else
+      # An [extensions] section already exists. TOML forbids a second one, and
+      # rewriting the existing `paths` array from a shell script is exactly how
+      # the silent-failure mode above gets introduced. Hand it to the user.
+      warn "$(t "$HUNK_CONFIG") already has an [extensions] section."
+      warn 'Not editing it. Add these to that section by hand:'
+      printf '\n    enabled = true\n    paths = [\n'
+      for ext in "${MISSING[@]}"; do
+        printf '      "%s",\n' "$ext"
+      done
+      printf '    ]\n\n'
+      warn 'If `paths` is already set, append to the existing array rather than'
+      warn 'replacing it. The paths must be absolute -- hunk does not expand ~.'
+    fi
+  fi
 fi
 
 # ── 4. report ────────────────────────────────────────────────────────────────
@@ -206,13 +238,13 @@ cat <<'NEXT'
   Verify the CLI resolves:
     hunk-plan --help
 
-  Verify the extension loads (open hunk in any repo with changes and check
-  the files pane is grouped, not flat):
+  Verify the extensions load (open hunk in any repo with changes; the files
+  pane should be grouped rather than flat, and `y` should copy a path):
     hunk
 
   A silently quarantined extension still shows a working files pane. If groups
-  do not appear, the extension did not load -- check that hunk's `paths` entry
-  is the real path printed above and contains no symlinked component.
+  do not appear, review-plan did not load -- check that hunk's `paths` entry is
+  the real path printed above and contains no symlinked component.
 NEXT
 
 if [ "$FAILED" != 0 ]; then
