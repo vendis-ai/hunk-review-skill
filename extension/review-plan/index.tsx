@@ -22,6 +22,7 @@ import type {
   HunkExtensionAPI,
 } from "hunkdiff/extension";
 import { useSyncExternalStore } from "react";
+import { blendHex } from "./color";
 import {
   filterAnnotationsInHunks,
   findRepoRoot,
@@ -47,6 +48,13 @@ import {
 
 const PLAN_FILE_PATH = ".hunk/review-plan.json";
 const MIN_API_VERSION = 8;
+
+/**
+ * How far a reviewed file's row is mixed toward the background behind it.
+ * High enough to sink the row out of the reading path, low enough that the
+ * filename stays legible when you go looking for it.
+ */
+const VIEWED_FADE = 0.55;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -316,14 +324,23 @@ function FileRowView({
   const name = clipLeft(basename(row.file.path), nameWidth);
   const gapWidth = Math.max(0, width - prefix.length - name.length - suffixWidth);
 
+  // A reviewed file is faded rather than recolored, so it still reads as its
+  // own change type -- just quieter. The fade has to target the background
+  // this particular row sits on, or a selected row fades toward the wrong
+  // color and stops being legible exactly when it is under the cursor. The
+  // ✓ itself is never faded: it is the reason the row is quiet.
+  const backdrop = selected ? theme.selectedHunk : theme.panel;
+  const fade = (color: string): string =>
+    row.status === "viewed" ? blendHex(color, backdrop, VIEWED_FADE) : color;
+
   return (
     <box width={width} backgroundColor={selected ? theme.selectedHunk : undefined} flexDirection="row">
       <text fg={theme.muted}>{prefix}</text>
-      <text fg={fileColor(row.file, theme)}>{name}</text>
+      <text fg={fade(fileColor(row.file, theme))}>{name}</text>
       <text>{" ".repeat(gapWidth + 1)}</text>
-      <text fg={theme.badgeAdded}>{added}</text>
+      <text fg={fade(theme.badgeAdded)}>{added}</text>
       <text fg={theme.muted}>{" "}</text>
-      <text fg={theme.badgeRemoved}>{removed}</text>
+      <text fg={fade(theme.badgeRemoved)}>{removed}</text>
     </box>
   );
 }
