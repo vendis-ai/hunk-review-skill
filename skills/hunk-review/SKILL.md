@@ -54,26 +54,52 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
    No config found at either filename: skip this step, nothing else changes.
 
-3. Look for design-doc references worth cross-linking — ADRs, RFCs, PRDs. Grep the commit
-   messages already in scope and the diff text itself for identifiers:
+3. Collect the design docs worth cross-linking — ADRs, RFCs, PRDs, runbooks, deep dives. Each
+   one becomes its own page inside the writeup (step 9), so the reviewer can read the decision a
+   change rests on without leaving the report. There are **two** sources, and the first is the
+   one most easily forgotten:
 
-       git -c color.ui=false log origin/main...HEAD --format=%B | grep -inE 'ADR[- ]?[0-9]{4}(-[0-9]{2}){0,2}|RFC[- ]?[0-9]+|PRD'
-       git -c color.ui=false diff origin/main...HEAD | grep -inE 'ADR[- ]?[0-9]{4}(-[0-9]{2}){0,2}|RFC[- ]?[0-9]+|PRD'
+   **a. Docs the branch itself changed.** A design doc this branch wrote or rewrote is the
+   strongest candidate there is — no identifier required, and no grep can miss it:
+
+       git -c color.ui=false diff --numstat -M origin/main...HEAD -- '*.md' '*.markdown' | sort -rn
+
+   Take the substantial ones and the ones under a decision-record path. Skip generated indexes
+   (`index.md`, `README.md` in a docs folder) — they are churn, not decisions. A 600-line RFC the
+   branch moved from `rfc-open/` to `rfc-done/` *is* the branch's design document; it belongs in
+   the writeup even though nothing anywhere spells the token "RFC 123".
+
+   **b. Docs the branch references but does not touch.** Grep the commit messages in scope and
+   the diff text for identifiers, then resolve each to a file:
+
+       git -c color.ui=false log origin/main...HEAD --format=%B | grep -inE 'ADR|RFC|PRD|runbook|docs/[a-z-]+/[0-9]{4}-'
+       git -c color.ui=false diff origin/main...HEAD | grep -inE 'ADR[- ]?[0-9]{4}|RFC[- ]?[0-9]+|docs/[a-z-]+/[0-9]{4}-[a-z0-9-]+\.md'
+
+   Do not assume a repo numbers its records. Many name them by date-slug
+   (`docs/rfc-done/2026-07-10-signup-allowlist-gate.md`), in which case `RFC 123` never appears
+   anywhere and the path itself is the identifier. Look at how the repo actually names things —
+   `ls docs/*/ | head -30` settles it in one command — before trusting any pattern above.
 
    Also treat anything the reviewer config's `knowledge_base` (step 2) already named as a
    candidate. For each identifier found, search the repo for a matching file or heading —
    `rg -il` the identifier itself, then the conventional locations (`docs/adr/`, `docs/decisions/`,
-   `docs/rfcs/`, `docs/prd/`) if the direct grep misses. A match earns an entry in the report's
-   `meta.json` `docs` array (step 9) — `{ "id": "ADR 2026-07-01", "path": "docs/adr/…md",
-   "citedBy": "<group-slug>" }` — and the renderer turns each one into its own page inside the
-   writeup, converted from the working-tree copy, reachable from the nav and linking back to the
-   group that cited it. Record the path; never paste the file's contents into a group body.
-   No match is not an error: most identifiers cited in a commit message are
-   shorthand for a doc that lives outside the repo (Notion, Confluence, an internal wiki), and get
-   an ordinary external link there instead if a URL is already present in the text — never a
-   fabricated one. This step is in-repo only and reads no network; do not fetch external URLs to
-   go looking for a doc that isn't already linked, and never invent a link the source text doesn't
-   contain.
+   `docs/rfc-open/`, `docs/rfc-done/`, `docs/rfcs/`, `docs/prd/`, `docs/operations/`) if the
+   direct grep misses.
+
+   Every resolved doc earns an entry in the report's `meta.json` `docs` array (step 9) —
+   `{ "id": "ADR 2026-07-01", "path": "docs/adr/…md", "citedBy": "<group-slug>" }`. The `id` is
+   what the nav shows, so make it short and recognisable ("ADR 2026-07-01", "Signup allowlist
+   RFC", "Pip runbook"), and `citedBy` is the slug of the group whose prose leans on it. Record
+   the path; never paste the file's contents into a group body. The renderer reads the
+   working-tree copy, converts it, and gives it a page with a link back to that group.
+
+   Sanity-check the result against the plan before moving on: if a group's files include a
+   design doc and that doc is not in `docs`, you have missed one. No match at all is not an
+   error — most identifiers cited in a commit message are shorthand for a doc that lives outside
+   the repo (Notion, Confluence, an internal wiki), and get an ordinary external link instead if
+   a URL is already present in the text — never a fabricated one. This step is in-repo only and
+   reads no network; do not fetch external URLs to go looking for a doc that isn't already
+   linked, and never invent a link the source text doesn't contain.
 
 4. Find the shape before reading any code. These aggregations, in this order, separate signal
    from noise on a large branch:
