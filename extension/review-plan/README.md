@@ -87,7 +87,10 @@ usually carry a `note` on its files, at most, and zero `annotations`.
 A `PlanAnnotation` on a file entry is a hunk-level note, not a file-level
 one -- give it `oldRange` and/or `newRange` (1-based, inclusive line spans on
 the diff's old/new side) to anchor it to the hunk it is actually about. An
-annotation with neither range is treated as file-scoped and always kept; an
+annotation with neither range is treated as file-scoped and always kept --
+anchored, on injection, to the file's first hunk, which is where hunk draws a
+file-scoped note anyway and is what keeps the file collapsible (see
+[Collapsing a file's diff](#collapsing-a-files-diff)); an
 annotation with a range that does not land inside any hunk of that file's
 current patch is dropped rather than injected pointing at nothing --
 `inject_notes` reports how many were dropped this way via a notification.
@@ -184,11 +187,42 @@ A file present in the changeset but not mentioned in the plan still shows up
 
 | Key | Command | Effect |
 | --- | --- | --- |
-| `v` | Toggle file reviewed | Marks/unmarks the selected file as viewed, against its current patch content |
+| `v` | Toggle file reviewed | Marks/unmarks the selected file as viewed, against its current patch content, and collapses/expands its diff |
+| `x` | Collapse/expand file diff | Collapses the selected file's diff to a single row, independently of whether it is reviewed |
 | `V` | Collapse/expand group | Toggles the collapse state of the group containing the selected file |
 | `n` | Next group | Jumps to the first file of the next group |
 | `p` | Previous group | Jumps to the first file of the previous group |
 | *(unbound)* | Collapse fully reviewed groups | Reachable from the Extensions menu; collapses every group whose files are all marked viewed |
+
+A reviewed file's row in the pane is also faded toward the background behind
+it, so a finished group stops competing for attention. The `✓` is left at full
+strength -- it is the reason the row went quiet.
+
+## Collapsing a file's diff
+
+Marking a file reviewed collapses its diff, the way a viewed file collapses on
+a pull request. Unmarking brings the diff back, and `x` collapses or expands
+any file without touching its reviewed state.
+
+A collapsed file is one row per hunk: the first carries the path, hunk count,
+`+`/`−`, a note count if it carries any, and the reviewed mark; the rest carry
+their hunk header. One row for the whole file would be tighter, and the
+file-view contract does not forbid it -- but hunk rejects a layout whose hunks
+share a row, back to raw diff, visible only as a file that refuses to collapse.
+Strictly increasing, disjoint row extents are the shape it accepts.
+
+Two limits come from hunk itself, not from this extension:
+
+- **A file carrying a note with no line range will not collapse.** Hunk keeps
+  any file with an unanchorable visible note on the raw diff and never consults
+  a file view for it, so `v` and `x` say so rather than looking dead. Plan
+  annotations never hit this -- a file-scoped one is anchored to the first hunk
+  on injection -- but a note from a real `--agent-context` sidecar can, and
+  there is nothing this extension can do about it.
+- **Collapse does not survive a reload.** A file's presentation is hunk's own
+  per-file state and only ever settable for the file under the cursor, so there
+  is no way to restore a set of collapsed files after the changeset reloads.
+  Reviewed state does survive -- that is on disk.
 
 ## Config (`[extension.review-plan]`)
 

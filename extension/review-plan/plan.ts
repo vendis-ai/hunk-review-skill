@@ -530,6 +530,32 @@ export function filterAnnotationsInHunks(
   return { kept, droppedCount };
 }
 
+/**
+ * Give every file-scoped annotation the first hunk's line range.
+ *
+ * A visible note hunk cannot anchor to a row keeps the entire file on the raw
+ * diff, so a single range-less annotation makes a file impossible to collapse.
+ * Hunk already draws a file-scoped note inside the first hunk, so anchoring it
+ * there is where it was being rendered anyway -- it just becomes placeable.
+ *
+ * The new side is preferred: it is the side that still exists after the
+ * change. A file with no hunks at all has nothing to anchor to, and its
+ * annotations are returned untouched.
+ */
+export function anchorFileScopedAnnotations(
+  annotations: readonly PlanAnnotation[],
+  ranges: PatchHunkRanges
+): PlanAnnotation[] {
+  const firstNew = ranges.new[0];
+  const firstOld = ranges.old[0];
+  return annotations.map((annotation) => {
+    if (annotation.oldRange !== undefined || annotation.newRange !== undefined) return annotation;
+    if (firstNew) return { ...annotation, newRange: firstNew };
+    if (firstOld) return { ...annotation, oldRange: firstOld };
+    return annotation;
+  });
+}
+
 export interface WindowResult<R> {
   rows: R[];
   offset: number;

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  anchorFileScopedAnnotations,
   filterAnnotationsInHunks,
   findRepoRoot,
   loadPlan,
@@ -762,5 +763,32 @@ describe("loadPlan", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("anchorFileScopedAnnotations", () => {
+  const ranges = { old: [[10, 14] as [number, number]], new: [[12, 18] as [number, number]] };
+
+  test("gives a range-less annotation the first new-side hunk range", () => {
+    expect(anchorFileScopedAnnotations([{ summary: "file scoped" }], ranges)).toEqual([
+      { summary: "file scoped", newRange: [12, 18] },
+    ]);
+  });
+
+  test("falls back to the old side for a file with no new-side hunks", () => {
+    expect(anchorFileScopedAnnotations([{ summary: "deleted file" }], { old: ranges.old, new: [] })).toEqual([
+      { summary: "deleted file", oldRange: [10, 14] },
+    ]);
+  });
+
+  test("leaves an already anchored annotation untouched", () => {
+    const anchored = [{ summary: "anchored", newRange: [40, 44] as [number, number] }];
+    expect(anchorFileScopedAnnotations(anchored, ranges)).toEqual(anchored);
+  });
+
+  test("leaves annotations alone when the file has no hunks to anchor to", () => {
+    expect(anchorFileScopedAnnotations([{ summary: "nowhere" }], { old: [], new: [] })).toEqual([
+      { summary: "nowhere" },
+    ]);
   });
 });

@@ -23,7 +23,9 @@ import type {
 } from "hunkdiff/extension";
 import { useSyncExternalStore } from "react";
 import { blendHex } from "./color";
+import { buildCollapsedLayout, rawFallbackReason, type CollapsedFile } from "./collapsed";
 import {
+  anchorFileScopedAnnotations,
   filterAnnotationsInHunks,
   findRepoRoot,
   loadPlan,
@@ -32,6 +34,7 @@ import {
   windowRows,
   type OrderedGroup,
   type OrderedResult,
+  type PatchHunkRanges,
   type PlanAnnotation,
   type ReviewPlan,
 } from "./plan";
@@ -55,6 +58,9 @@ const MIN_API_VERSION = 8;
  * filename stays legible when you go looking for it.
  */
 const VIEWED_FADE = 0.55;
+
+/** Id of the file view that stands in for a whole diff with one row. */
+const COLLAPSED_VIEW_ID = "collapsed";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -102,7 +108,16 @@ interface StoreState {
   source: string | null;
   error: string | null;
   ordered: OrderedResult<ExtensionDiffFile> | null;
+  /** Group titles collapsed in the pane. */
   collapsed: Set<string>;
+  /**
+   * Paths whose diff is collapsed in the review stream.
+   *
+   * Ours rather than read back from `fileViews.isActive`: the host answer is
+   * not reliable immediately after a `select`, and a toggle that mis-reads
+   * the current state collapses when it meant to expand.
+   */
+  collapsedFiles: Set<string>;
   viewed: ViewedState;
   repoRoot: string | null;
 }
@@ -116,6 +131,7 @@ function initialState(): StoreState {
     error: null,
     ordered: null,
     collapsed: new Set(),
+    collapsedFiles: new Set(),
     viewed: EMPTY_VIEWED,
     repoRoot: null,
   };
@@ -162,11 +178,18 @@ function reconcileCollapsed(previous: StoreState, ordered: OrderedResult<Extensi
   return next;
 }
 
-function refreshViewedFromDisk(): void {
+/**
+ * Re-read viewed state, and forget which files were collapsed.
+ *
+ * A reload puts every file back on raw diff host-side, and presentation is
+ * only settable for the file under the cursor -- so there is no way to put a
+ * set of collapsed files back. Remembering them would only let our state
+ * drift from what is on screen.
+ */
+function resyncAfterChangeset(): void {
   const state = store.getSnapshot();
-  if (!state.repoRoot) return;
-  const viewed = readViewed(viewedStatePath(state.repoRoot, process.env));
-  store.setState({ ...state, viewed });
+  const viewed = state.repoRoot ? readViewed(viewedStatePath(state.repoRoot, process.env)) : state.viewed;
+  store.setState({ ...state, viewed, collapsedFiles: new Set() });
 }
 
 function moveToAdjacentGroup(ctx: ExtensionCommandContext, direction: 1 | -1): void {
@@ -185,6 +208,92 @@ function moveToAdjacentGroup(ctx: ExtensionCommandContext, direction: 1 | -1): v
 
   const firstFile = groups[targetIndex]?.files[0]?.file;
   if (firstFile) ctx.navigation.selectFile(firstFile.id);
+}
+
+// ---------------------------------------------------------------------------
+// Collapsed file view
+//
+// Presentation is host state, per file, and only ever set for the file under
+// the cursor -- there is no API to collapse a set of files at once, and a
+// reload drops the presentation entirely. So nothing here is persisted: the
+// collapse follows `v` and the manual toggle, and comes back expanded after
+// a reload.
+// ---------------------------------------------------------------------------
+
+function viewedStatusOf(file: ExtensionDiffFile): ViewedStatus {
+  const state = store.getSnapshot();
+  return classify(state.viewed, [{ path: file.path, patch: file.patch }]).get(file.path) ?? "unseen";
+}
+
+/**
+ * The file's hunk spans as hunk itself parsed them, or `null` when it did not.
+ *
+ * Anchoring has to agree with the source ranges the collapsed row declares, and
+ * the row's come from `file.hunks`. Anchoring off a separately parsed patch
+ * risks placing a note a line outside every declared range -- which reads as
+ * an unplaceable note and puts the file back on raw diff.
+ */
+function hostHunkRanges(file: ExtensionDiffFile): PatchHunkRanges | null {
+  if (!file.hunks || file.hunks.length === 0) return null;
+  const old: [number, number][] = [];
+  const updated: [number, number][] = [];
+  for (const hunk of file.hunks) {
+    if (hunk.oldRange) old.push(hunk.oldRange);
+    if (hunk.newRange) updated.push(hunk.newRange);
+  }
+  return { old, new: updated };
+}
+
+function collapsedFileOf(file: ExtensionDiffFile): CollapsedFile {
+  return {
+    path: file.path,
+    hunks: (file.hunks ?? []).map((hunk) => ({
+      header: hunk.header,
+      oldRange: hunk.oldRange,
+      newRange: hunk.newRange,
+    })),
+    additions: file.stats.additions,
+    deletions: file.stats.deletions,
+    noteCount: file.agent?.annotations.length ?? 0,
+    viewed: viewedStatusOf(file) === "viewed",
+  };
+}
+
+/**
+ * Collapse or expand the selected file's diff.
+ *
+ * Hunk keeps a file with an unanchorable note on raw diff and never consults
+ * a view for it, so a refusal is reported rather than left looking like a
+ * dead key.
+ */
+function setSelectedFileCollapsed(ctx: ExtensionCommandContext, collapse: boolean): void {
+  const file = ctx.selection.file;
+  if (!file) return;
+  const state = store.getSnapshot();
+
+  if (collapse) {
+    const reason = rawFallbackReason(file.agent?.annotations);
+    if (reason) {
+      ctx.notify(`${basename(file.path)} stays expanded: ${reason}`, "warning");
+      return;
+    }
+    ctx.fileViews.select(COLLAPSED_VIEW_ID);
+  } else if (!state.collapsedFiles.has(file.path)) {
+    return;
+  } else {
+    ctx.fileViews.select(null);
+  }
+
+  const collapsedFiles = new Set(state.collapsedFiles);
+  if (collapse) collapsedFiles.add(file.path);
+  else collapsedFiles.delete(file.path);
+  store.setState({ ...state, collapsedFiles });
+
+  // Collapsing a file changes its height, and the review stream re-anchors on
+  // whatever row survives -- which is above the file the user just acted on,
+  // so the cursor appears to jump away from it. Reselecting puts it back on
+  // the row that replaced the diff.
+  ctx.navigation.selectFile(file.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,9 +561,14 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
 
       let mappedAnnotations: AgentAnnotation[] = [];
       if (planAnnotations && planAnnotations.length > 0) {
-        const { kept, droppedCount } = filterAnnotationsInHunks(planAnnotations, patchHunkRanges(file.patch));
+        const ranges = patchHunkRanges(file.patch);
+        const { kept, droppedCount } = filterAnnotationsInHunks(planAnnotations, ranges);
         orphanedAnnotations += droppedCount;
-        mappedAnnotations = kept.map(toAgentAnnotation);
+        // Anchor before mapping: a note with no range cannot be placed on a
+        // file view's row, and one unplaceable note keeps the whole file on
+        // raw diff -- which would make any file carrying a file-scoped note
+        // permanently uncollapsible.
+        mappedAnnotations = anchorFileScopedAnnotations(kept, hostHunkRanges(file) ?? ranges).map(toAgentAnnotation);
       }
 
       if (!note && mappedAnnotations.length === 0) return { ...file };
@@ -502,6 +616,9 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
       error: loaded.error,
       ordered,
       collapsed: reconcileCollapsed(previous, ordered),
+      // Not carried over: a freshly transformed changeset is on raw diff
+      // throughout, whatever was collapsed before.
+      collapsedFiles: new Set(),
       viewed: prunedViewed,
       repoRoot,
     });
@@ -528,6 +645,18 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     component: FilesPaneComponent,
   });
 
+  hunk.registerFileView({
+    id: COLLAPSED_VIEW_ID,
+    title: "Collapsed",
+    // Unconditional on purpose. `hunks` is optional in the contract, and
+    // gating availability on it makes the view unavailable for any file whose
+    // hunks are not populated at the moment Hunk asks -- `select` then refuses
+    // and the key does nothing. `layout` declines instead, which is the
+    // contract's own answer for a file a view cannot present.
+    matches: () => true,
+    layout: (input) => buildCollapsedLayout(collapsedFileOf(input.file)),
+  });
+
   hunk.registerCommand({ id: "toggleViewed", title: "Toggle file reviewed", key: "v" }, (ctx) => {
     const file = ctx.selection.file;
     const state = store.getSnapshot();
@@ -537,6 +666,15 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     store.setState({ ...state, viewed: nextViewed });
     const status = classify(nextViewed, [{ path: file.path, patch: file.patch }]).get(file.path);
     ctx.notify(status === "viewed" ? `Marked ${basename(file.path)} reviewed` : `Marked ${basename(file.path)} unreviewed`);
+    // Reviewing a file is the moment its diff stops being worth the space,
+    // so marking it collapses it and unmarking it brings the diff back.
+    setSelectedFileCollapsed(ctx, status === "viewed");
+  });
+
+  hunk.registerCommand({ id: "toggleCollapsed", title: "Collapse/expand file diff", key: "x" }, (ctx) => {
+    const file = ctx.selection.file;
+    if (!file) return;
+    setSelectedFileCollapsed(ctx, !store.getSnapshot().collapsedFiles.has(file.path));
   });
 
   hunk.registerCommand({ id: "toggleGroup", title: "Collapse/expand group", key: "V" }, (ctx) => {
@@ -582,8 +720,8 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     }
   });
 
-  hunk.on("changeset_loaded", () => refreshViewedFromDisk());
-  hunk.on("session_reload", () => refreshViewedFromDisk());
+  hunk.on("changeset_loaded", () => resyncAfterChangeset());
+  hunk.on("session_reload", () => resyncAfterChangeset());
   hunk.on("shutdown", () => {
     const state = store.getSnapshot();
     if (!state.repoRoot) return;
