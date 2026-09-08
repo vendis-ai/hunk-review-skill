@@ -62,12 +62,16 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    **a. Docs the branch itself changed.** A design doc this branch wrote or rewrote is the
    strongest candidate there is — no identifier required, and no grep can miss it:
 
-       git -c color.ui=false diff --numstat -M origin/main...HEAD -- '*.md' '*.markdown' | sort -rn
+       git -c color.ui=false diff --numstat -M origin/main...HEAD \
+         -- '*.md' '*.markdown' '*.rst' '*.adoc' '*.org' | sort -rn
 
    Take the substantial ones and the ones under a decision-record path. Skip generated indexes
    (`index.md`, `README.md` in a docs folder) — they are churn, not decisions. A 600-line RFC the
    branch moved from `rfc-open/` to `rfc-done/` *is* the branch's design document; it belongs in
    the writeup even though nothing anywhere spells the token "RFC 123".
+
+   `.html` and `.txt` are deliberately not in that sweep — in most repos they are build output,
+   not decisions. Pick one up only when it sits under a decision-record path.
 
    **b. Docs the branch references but does not touch.** Grep the commit messages in scope and
    the diff text for identifiers, then resolve each to a file:
@@ -90,16 +94,30 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    `{ "id": "ADR 2026-07-01", "path": "docs/adr/…md", "citedBy": "<group-slug>" }`. The `id` is
    what the nav shows, so make it short and recognisable ("ADR 2026-07-01", "Signup allowlist
    RFC", "Pip runbook"), and `citedBy` is the slug of the group whose prose leans on it. Record
-   the path; never paste the file's contents into a group body. The renderer reads the
-   working-tree copy, converts it, and gives it a page with a link back to that group.
+   the path; never paste the file's contents into a group body. The renderer reads the copy on
+   disk, converts it, and gives it a page with a link back to that group.
+
+   Three things about `path` and its alternative:
+
+   - It is repo-relative by default, but an **absolute or `~`-prefixed path is taken as written**.
+     A sibling docs checkout or a shared vault is a normal reference, not a special case.
+   - The **format follows the extension**. `.md` is converted; `.html` has its `<body>` inlined
+     and scrubbed; anything else is shown as its own text rather than as guessed-at markup — so an
+     `.adoc` reads as an `.adoc`, not as broken markdown.
+   - A doc that is not on this machine takes **`"url"` instead of `"path"`** —
+     `{ "id": "Signup PRD", "url": "https://…", "citedBy": "<group-slug>" }` — and becomes an
+     external nav link rather than a page. Use it for Notion, Confluence, an internal wiki. An
+     entry with both, with neither, or with a non-http(s) url fails the render loudly. Never
+     invent a URL: this step reads no network, so a url belongs here only when the source text
+     already contained it.
 
    Sanity-check the result against the plan before moving on: if a group's files include a
    design doc and that doc is not in `docs`, you have missed one. No match at all is not an
    error — most identifiers cited in a commit message are shorthand for a doc that lives outside
-   the repo (Notion, Confluence, an internal wiki), and get an ordinary external link instead if
-   a URL is already present in the text — never a fabricated one. This step is in-repo only and
-   reads no network; do not fetch external URLs to go looking for a doc that isn't already
-   linked, and never invent a link the source text doesn't contain.
+   the repo (Notion, Confluence, an internal wiki). Those become a `"url"` entry when the source
+   text already carries the link, and nothing at all when it doesn't. This step reads no network;
+   do not fetch external URLs to go looking for a doc that isn't already linked, and never invent
+   a link the source text doesn't contain.
 
 4. Find the shape before reading any code. These aggregations, in this order, separate signal
    from noise on a large branch:
@@ -223,6 +241,19 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    - **Design-doc citations** are ordinary Markdown links to the doc's own page:
      `[ADR 2026-07-01](#doc-adr-2026-07-01)`, where the slug is `doc-` plus the `id` you gave it
      in `meta.json`, lowercased with runs of non-alphanumerics collapsed to a single hyphen.
+
+     **Cite the section, not just the file.** Append `/` and the heading's slug —
+     `[ADR 2026-07-01](#doc-adr-2026-07-01/consistency-model)` — and the reader lands on that
+     section instead of at the top of a 600-line document. The heading slug follows the same
+     rule as every other slug here, applied to the heading's own text, so list them first rather
+     than guessing:
+
+         grep -nE '^#+ ' docs/adr/2026-07-01-….md
+
+     One cheap command per doc you cite. A heading that later gets renamed degrades to the top of
+     the doc, so a stale anchor costs nothing — but an invented one buys nothing either. Anchors
+     only reach headings: to point at an example buried mid-section, cite the nearest heading
+     above it.
    - **GitHub references need no markup at all.** Write `#123` as plain text and the renderer
      links it, deriving `owner/repo` from `git remote get-url origin` itself. `other/repo#123`
      works too, and a `#123` inside a code fence is deliberately left alone. Do not hand-write a

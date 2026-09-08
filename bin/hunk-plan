@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Find and manage the review-plan hunk extension's plan file without
 # reimplementing the path derivation that lives in the extension's own
@@ -59,6 +59,10 @@ Commands:
                         nav, table of contents, section ids, verdict badges and
                         link rules are all derived here; only the body prose
                         comes from the report directory.
+                        A meta.json "docs" entry takes either "path" (repo-
+                        relative, absolute or ~-prefixed; converted according to
+                        its extension) or "url" (an external nav link, never
+                        fetched) -- one or the other, never both.
   clear [--yes]         Remove this repo's plan (both possible locations) and
                         its sibling .viewed.json, .sidecar.json, .html and
                         .report/. Asks for confirmation unless --yes.
@@ -375,6 +379,34 @@ slugify() {
     sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
 }
 
+# A design doc is not always inside the repo under review -- a sibling docs
+# checkout, a shared vault, a path outside any repo at all. Absolute and
+# ~-prefixed paths are taken as written; anything else stays repo-relative,
+# which is what every path has always been.
+resolve_doc_path() {
+  local root="$1" p="$2"
+  # The tildes below are deliberately literal: this expands a `~` a human wrote
+  # into a meta.json string, where the shell never had a chance to.
+  # shellcheck disable=SC2088
+  case "$p" in
+    '~') printf '%s' "$HOME" ;;
+    '~/'*) printf '%s/%s' "$HOME" "${p#'~/'}" ;;
+    /*) printf '%s' "$p" ;;
+    *) printf '%s/%s' "$root" "$p" ;;
+  esac
+}
+
+# How report.js should turn this file into a pane. The extension is the only
+# thing the renderer knows about a file it never parses, so the decision is made
+# here and travels as a data-format attribute rather than being re-guessed in JS.
+doc_format() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *.md | *.markdown | *.mdown | *.mkd) printf 'md' ;;
+    *.html | *.htm) printf 'html' ;;
+    *) printf 'text' ;;
+  esac
+}
+
 # owner/repo, or empty when origin is not a github.com remote. A wrong guess is
 # worse than no link, so anything unrecognized yields nothing.
 github_slug() {
@@ -536,17 +568,37 @@ cmd_render() {
 
   [[ ${#g_slug[@]} -gt 0 ]] || die "the plan has no groups to render"
 
-  # Docs declared in meta.json.
-  local -a d_slug=() d_id=() d_path=() d_cited=()
-  local bid bpath bcited did
-  while IFS=$'\t' read -r bid bpath bcited; do
+  # Docs declared in meta.json. Fields are joined on "|" rather than @tsv'd:
+  # base64 never contains a pipe, and `read` with IFS=$'\t' collapses runs of
+  # tabs, so an empty middle field (a doc with a url and no path) would silently
+  # shift every field after it.
+  local -a d_slug=() d_id=() d_path=() d_url=() d_cited=()
+  local bid bpath burl bcited did dpath durl
+  while IFS='|' read -r bid bpath burl bcited; do
     [[ -n $bid ]] || continue
     did=$(b64d "$bid")
+    dpath=$([[ -n $bpath ]] && b64d "$bpath" || printf '')
+    durl=$([[ -n $burl ]] && b64d "$burl" || printf '')
+
+    [[ -n $dpath && -n $durl ]] &&
+      die "doc '$did' in meta.json has both \"path\" and \"url\" -- a doc is either read from disk or linked out, not both"
+    [[ -z $dpath && -z $durl ]] &&
+      die "doc '$did' in meta.json has neither \"path\" nor \"url\""
+    # A nav entry is a live link; only ever point it off-machine over http(s).
+    [[ -n $durl && $durl != http://* && $durl != https://* ]] &&
+      die "doc '$did' has a non-http(s) url: $durl"
+
     d_id+=("$did")
-    d_path+=("$(b64d "$bpath")")
-    d_cited+=("$(b64d "$bcited")")
+    d_path+=("$dpath")
+    d_url+=("$durl")
+    d_cited+=("$([[ -n $bcited ]] && b64d "$bcited" || printf '')")
     d_slug+=("doc-$(slugify "$did")")
-  done < <(jq -r '.docs[]? | [ (.id | @base64), (.path | @base64), ((.citedBy // "") | @base64) ] | @tsv' "$dir/meta.json")
+  done < <(jq -r '
+    .docs[]?
+    | [ (.id | @base64), ((.path // "") | @base64),
+        ((.url // "") | @base64), ((.citedBy // "") | @base64) ]
+    | join("|")
+  ' "$dir/meta.json")
 
   local title subtitle
   title=$(jq -r '.title // ""' "$dir/meta.json")
@@ -568,8 +620,15 @@ cmd_render() {
     if [[ ${#d_slug[@]} -gt 0 ]]; then
       printf '  <span class="nav-sep">|</span>\n'
       for ((i = 0; i < ${#d_slug[@]}; i++)); do
-        printf '  <a href="#%s" data-nav="%s">%s</a>\n' \
-          "${d_slug[i]}" "${d_slug[i]}" "$(esc "${d_id[i]}")"
+        # A url doc has no pane, so it carries no data-nav: routing must never
+        # try to activate a link that leaves the page.
+        if [[ -n ${d_url[i]} ]]; then
+          printf '  <a class="nav-ext" href="%s" target="_blank" rel="noopener noreferrer">%s<span class="ext-mark">&#8599;</span></a>\n' \
+            "$(esc "${d_url[i]}")" "$(esc "${d_id[i]}")"
+        else
+          printf '  <a href="#%s" data-nav="%s">%s</a>\n' \
+            "${d_slug[i]}" "${d_slug[i]}" "$(esc "${d_id[i]}")"
+        fi
       done
     fi
     printf '</div></nav>\n<main>\n'
@@ -629,28 +688,47 @@ cmd_render() {
     done
 
     printf '  <footer class="gen">Generated %s</footer>\n' "$(date '+%Y-%m-%d %H:%M')"
+    # Attribution. The lockups are inlined rather than linked because this page
+    # is a review of unmerged code and must never reach the network to render.
+    # Guarded: a missing asset drops the footer, it never aborts a render.
+    if [[ -f "$assets/vendis-logo.svg" && -f "$assets/vendis-logo-dark.svg" ]]; then
+      printf '  <footer class="brand"><a href="https://vendis.ai" target="_blank" rel="noopener noreferrer" aria-label="Vendis">'
+      printf '<span class="logo-light">'
+      cat "$assets/vendis-logo.svg"
+      printf '</span><span class="logo-dark">'
+      cat "$assets/vendis-logo-dark.svg"
+      printf '</span></a></footer>\n'
+    fi
     printf '</div></div>\n'
 
     # ── doc panes ──
+    local resolved fmt
     for ((i = 0; i < ${#d_slug[@]}; i++)); do
+      [[ -n ${d_url[i]} ]] && continue # url docs are a nav link, not a pane
+
+      resolved=$(resolve_doc_path "$root" "${d_path[i]}")
+      fmt=$(doc_format "${d_path[i]}")
+
       printf '<div class="pane" data-doc="%s" hidden><div class="wrap"><article class="doc">\n' "${d_slug[i]}"
       printf '  <h1>%s</h1>\n' "$(esc "${d_id[i]}")"
       printf '  <p class="doc-src">%s</p>\n' "$(esc "${d_path[i]}")"
-      if [[ -f "$root/${d_path[i]}" ]]; then
-        printf '  <div class="md"><script type="text/markdown">%s</script></div>\n' \
-          "$(b64e "$root/${d_path[i]}")"
+      if [[ -f $resolved ]]; then
+        printf '  <div class="md" data-format="%s"><script type="text/markdown">%s</script></div>\n' \
+          "$fmt" "$(b64e "$resolved")"
       else
-        printf '  <div class="missing">Not found in the working tree: <code>%s</code></div>\n' \
-          "$(esc "${d_path[i]}")"
-        echo "$PROG: referenced doc not found: ${d_path[i]}" >&2
+        printf '  <div class="missing">Not found on disk: <code>%s</code></div>\n' \
+          "$(esc "$resolved")"
+        echo "$PROG: referenced doc not found: $resolved" >&2
       fi
+      # Returning is scroll memory's job -- it lands the reader on the bullet
+      # they left, not on the top of the group containing it. citedBy stays the
+      # label so the link still says where "back" goes.
       if [[ -n ${d_cited[i]} ]]; then
-        local back="${d_cited[i]}" backtitle="${d_cited[i]}" j
+        local backtitle="${d_cited[i]}" j
         for ((j = 0; j < ${#g_slug[@]}; j++)); do
-          [[ ${g_slug[j]} == "$back" ]] && backtitle="${g_title[j]}"
+          [[ ${g_slug[j]} == "${d_cited[i]}" ]] && backtitle="${g_title[j]}"
         done
-        printf '  <a class="back-link" href="#group-%s">&larr; back to %s</a>\n' \
-          "$back" "$(esc "$backtitle")"
+        printf '  <a class="back-link" href="#">&larr; back to %s</a>\n' "$(esc "$backtitle")"
       else
         printf '  <a class="back-link" href="#">&larr; back to review</a>\n'
       fi
@@ -749,11 +827,14 @@ cmd_gc() {
   # A digest can be caught by more than one pass -- an orphaned .html and an
   # orphaned .viewed.json share a base, and a gone repo can also be old. Keep
   # the first reason so the listing reads as one line per digest.
-  local -A seen=()
+  #
+  # A newline-delimited list rather than an associative array: macOS ships bash
+  # 3.2, which has no `local -A`, and this whole command aborted there.
+  local seen=$'\n'
   local -a uniq_doomed=() uniq_reasons=()
   for ((i = 0; i < ${#doomed[@]}; i++)); do
-    [[ -n ${seen[${doomed[i]}]:-} ]] && continue
-    seen[${doomed[i]}]=1
+    [[ $seen == *$'\n'"${doomed[i]}"$'\n'* ]] && continue
+    seen="${seen}${doomed[i]}"$'\n'
     uniq_doomed+=("${doomed[i]}")
     uniq_reasons+=("${reasons[i]}")
   done

@@ -1,5 +1,7 @@
 # hunk-review-skill
 
+[![CI](https://github.com/vendis-ai/hunk-review-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/vendis-ai/hunk-review-skill/actions/workflows/ci.yml)
+
 Turn a large diff or PR into a **grouped, prioritised review plan** you open before reading any
 code — plus a skimmable HTML writeup of what the branch actually does.
 
@@ -11,6 +13,12 @@ The point is what it *doesn't* show you. A branch with a genuine auth fix buried
 2,000-file rename reads as 2,000 files. With a plan it reads as "security boundary, 4 files" —
 and everything else sinks.
 
+One plan, two views of it — the diff in the terminal, the reasoning on a page next to it:
+
+| The plan in Hunk | The same plan as a page |
+|---|---|
+| [<img src="docs/img/review-plan-tui.png" height="290" alt="The review plan in Hunk: groups ordered by importance, with an annotation open on the hunk that carries the decision">](docs/img/review-plan-tui.png) | [<img src="docs/img/writeup.png" height="290" alt="The HTML writeup: TL;DR, a table of contents with per-group summaries, and bullets carrying ref tags back to the annotations">](docs/img/writeup.png) |
+
 ## What's in here
 
 | Path | What it is |
@@ -18,10 +26,11 @@ and everything else sinks.
 | `skills/hunk-review/` | Builds the plan and the HTML writeup. The main event. |
 | `skills/hunk-handle-notes/` | Reads and acts on review notes you left in a live Hunk session. |
 | `bin/hunk-plan` | CLI to write, read, convert, render, and clean up the plan file. |
-| `assets/` | The writeup's frame — CSS, runtime JS, and vendored `marked` and `mermaid`. |
+| `assets/` | The writeup's frame — CSS, runtime JS, vendored `marked` and `mermaid`, and the two logo lockups. |
 | `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
 | `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
 | `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
+| `docs/img/` | The screenshots above. |
 
 ## Requirements
 
@@ -100,9 +109,32 @@ and a table of contents. `Skim`-tier groups start collapsed, so the page opens s
 needs a decision.
 
 Any ADR, RFC or runbook the branch leans on becomes **its own page inside that same file**,
-converted from the working-tree copy and reachable from a nav bar across the top. Follow a
-citation to read the decision it rests on, hit Back, and you're at the group you left. GitHub
-`#123` references become links on their own, and every off-machine link opens in a new tab.
+converted from its copy on disk and reachable from a nav bar across the top. GitHub `#123`
+references become links on their own, and every off-machine link opens in a new tab.
+
+Those pages are not limited to markdown in this repo:
+
+| The doc is | What you get |
+|---|---|
+| `.md` / `.markdown` | Converted, with YAML frontmatter lifted out as a field table |
+| `.html` | Its `<body>` inlined, scrubbed — the `<style>` and `<script>` it carries are dropped, not applied to your report |
+| anything else (`.rst`, `.adoc`, `.txt`) | Shown as its own text, never as guessed-at markup |
+| outside the repo | `"path"` may be absolute or `~`-prefixed — a sibling docs checkout or a shared vault works |
+| not on this machine at all | `"url"` instead of `"path"` makes it an external nav link; Notion, Confluence and the rest link out rather than being fetched |
+
+A citation can aim at a heading, not just a file: `#doc-adr-0001/consistency-model` opens the doc
+*and* lands on that section, briefly marked so your eye finds it. A doc with enough headings gets
+its own contents list, so a 600-line PRD stays navigable when the citation aimed elsewhere. A
+heading that has since been renamed degrades to the top of the doc rather than going nowhere.
+
+<p align="center">
+  <a href="docs/img/doc-page.png"><img src="docs/img/doc-page.png" height="360"
+    alt="A doc page inside the writeup: its own contents list built from its headings, and YAML frontmatter lifted out as a field table"></a>
+</p>
+
+Follow a citation, hit Back, and you land on the bullet you left — not at the top of the page.
+Position is remembered as *which block was at the top of the viewport*, not as a pixel offset, so
+it survives resizing the window, zooming, or rotating a phone while the doc was open.
 
 The agent writes only prose. The frame, nav, table of contents, section ids, badges and link
 rules are all produced by `hunk-plan render` from the plan itself, so the page can't disagree with
@@ -182,20 +214,46 @@ The CLI and the renderer have no such dependency — their tests are plain bash 
 repo and a throwaway `XDG_STATE_HOME`, so they never touch your real plan directory:
 
 ```sh
-test/render_test.sh                          # frame, ordering, slugs, gc, clear
+test/render_test.sh                               # frame, ordering, slugs, doc entries, gc, clear
 CHROME=google-chrome-stable test/render_test.sh   # ...plus the DOM behaviour
+TEST_BASH=/bin/bash test/render_test.sh           # ...under a pinned shell
 ```
 
 The `CHROME` pass is the one that matters when touching `assets/report.js`: it asserts that
 Markdown converts, that a `#123` inside a code fence is *not* linkified, that external links get
-`target="_blank"`, that a `<script>` in a converted doc is stripped, and that hash routing swaps
-panes.
+`target="_blank"`, that a `<script>` or a `<style>` in a converted doc is stripped, that hash
+routing swaps panes, that doc headings get slugged ids and deep links land on them, and that
+leaving a pane and returning **after a reflow** puts the same block back at the top of the
+viewport.
+
+`TEST_BASH` pins the interpreter `hunk-plan` runs under. It matters on macOS, where `/bin/bash` is
+3.2 while `#!/usr/bin/env bash` finds Homebrew's bash 5 whenever one is installed — so without it a
+bash-4-ism passes locally and breaks for everyone on a stock Mac. CI runs the suite both ways on
+`macos-latest` for exactly that reason.
 
 `extension/review-plan/README.md` documents the plan JSON schema, the annotation model, key
 bindings, and where plan and viewed state live on disk.
 `extension/copy-path/README.md` documents its three commands, the path forms it offers, and how it
 reaches the clipboard over SSH.
 
+## Built by Vendis
+
+<p align="center">
+  <a href="https://vendis.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/img/vendis-logo-dark.png">
+      <img src="docs/img/vendis-logo.png" height="46" alt="Vendis">
+    </picture>
+  </a>
+</p>
+
+`hunk-review-skill` is built and maintained by [Vendis](https://vendis.ai), where it reviews our
+own branches every day.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+The Vendis name, logo and wordmark are trademarks of Vendis and are **not** covered by that
+licence. Fork the code freely; swap `assets/vendis-logo*.svg` and the footer above for your own
+mark if you redistribute a modified version.

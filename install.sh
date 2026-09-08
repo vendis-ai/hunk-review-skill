@@ -104,6 +104,7 @@ if [ -d "$HOME/.claude" ]; then
     link "${src%/}" "$CLAUDE_SKILLS/$(basename "$src")"
   done
 else
+  # shellcheck disable=SC2088 # literal path in a message, not an expansion
   warn '~/.claude not found -- skipping Claude Code (nothing else to do)'
 fi
 

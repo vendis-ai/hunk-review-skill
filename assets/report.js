@@ -1,15 +1,19 @@
 /* Review report runtime. Inlined into the generated HTML by `hunk-plan render`.
  *
- * Reads window.__REPORT__ (written by the renderer) and does four things, in
+ * Reads window.__REPORT__ (written by the renderer) and does five things, in
  * this order, because each depends on the one before it:
  *
- *   1. decode the base64 markdown payloads and convert them with marked
+ *   1. decode the base64 payloads and convert them per data-format
  *   2. rewrite links in the resulting DOM (external -> new tab, #123 -> GitHub)
- *   3. wire hash routing between the review pane and the doc panes
- *   4. render mermaid, per pane, only once that pane is actually visible
+ *   3. give doc headings ids, so a citation can land on a section
+ *   4. remember where each pane was scrolled to, as an anchor rather than a pixel
+ *   5. wire hash routing between the review pane and the doc panes
+ *   6. render mermaid, per pane, only once that pane is actually visible
  *
- * Step 4 is last and per-pane on purpose: mermaid measures its container, and a
+ * Step 6 is last and per-pane on purpose: mermaid measures its container, and a
  * diagram laid out inside a `hidden` pane comes back zero-width with no error.
+ * It also changes the page height after the fact, which is why step 4 restores
+ * again once its promise settles.
  */
 (function () {
   'use strict';
@@ -195,7 +199,10 @@
   // <script>. This page runs from file:// with nothing worth stealing, but it
   // can still reach the network, and executing a contributor's markdown is not
   // a property a review tool should have.
-  var DROP_TAGS = 'script,iframe,object,embed,link,meta,form,base';
+  // `style` is in here for a reason that only shows up once a doc is HTML: a
+  // <style> block is not scoped to the element it sits in, so a stylesheet
+  // carried by a converted document restyles the whole report, nav and all.
+  var DROP_TAGS = 'script,style,iframe,object,embed,link,meta,form,base';
 
   function scrub(root) {
     var bad = root.querySelectorAll(DROP_TAGS);
@@ -220,9 +227,42 @@
     return root;
   }
 
-  function renderMarkdown() {
-    if (typeof marked === 'undefined') return;
-    marked.setOptions({ gfm: true, breaks: false });
+  // Markdown into a detached div: parse, scrub, promote fences. Returns the
+  // staging node, or null when marked is missing.
+  function stageMarkdown(src) {
+    if (typeof marked === 'undefined') return null;
+    var staging = document.createElement('div');
+    staging.innerHTML = marked.parse(src);
+    scrub(staging);
+    promoteMermaidFences(staging);
+    return staging;
+  }
+
+  // A whole HTML document, not a fragment: DOMParser is inert (nothing it
+  // builds ever runs) and hands back a real <body>, which is the only reliable
+  // way to drop the <!doctype>/<head> wrapper instead of rendering it as text.
+  function stageHtml(src) {
+    var parsed = new DOMParser().parseFromString(src, 'text/html');
+    var staging = document.createElement('div');
+    scrub(parsed);
+    promoteMermaidFences(parsed);
+    staging.replaceChildren.apply(staging, Array.prototype.slice.call(parsed.body.childNodes));
+    return staging;
+  }
+
+  // Anything else. Guessing a converter for .rst or .adoc would render their
+  // markup as noise and claim it was a document; a <pre> is honest.
+  function stagePlain(src) {
+    var staging = document.createElement('div');
+    var pre = document.createElement('pre');
+    pre.className = 'plain';
+    pre.textContent = src;
+    staging.appendChild(pre);
+    return staging;
+  }
+
+  function renderBodies() {
+    if (typeof marked !== 'undefined') marked.setOptions({ gfm: true, breaks: false });
     var holders = document.querySelectorAll('.md');
     for (var i = 0; i < holders.length; i++) {
       var script = holders[i].querySelector('script[type="text/markdown"]');
@@ -235,10 +275,15 @@
         holders[i].className += ' missing';
         continue;
       }
+
+      // The renderer decided the format from the file's extension; agent prose
+      // has no attribute and is always markdown.
+      var format = holders[i].getAttribute('data-format') || 'md';
+
       // Frontmatter is a doc-file convention, not something a group body ever
       // carries -- so a leading `---` in agent prose stays an honest rule.
       var fmNode = null;
-      if (holders[i].closest && holders[i].closest('article.doc')) {
+      if (format === 'md' && holders[i].closest && holders[i].closest('article.doc')) {
         var split = splitFrontmatter(src);
         if (split) {
           var pairs = parseFrontmatter(split.meta);
@@ -247,12 +292,14 @@
         }
       }
 
-      // Parse detached, scrub, then adopt -- so nothing removable is ever live
-      // in the document, however briefly.
-      var staging = document.createElement('div');
-      staging.innerHTML = marked.parse(src);
-      scrub(staging);
-      promoteMermaidFences(staging);
+      // Staged detached, scrubbed, then adopted -- so nothing removable is ever
+      // live in the document, however briefly.
+      var staging =
+        format === 'html' ? stageHtml(src) :
+        format === 'text' ? stagePlain(src) :
+        stageMarkdown(src);
+      if (!staging) continue; // markdown with no marked: leave the payload alone
+
       var adopted = Array.prototype.slice.call(staging.childNodes);
       if (fmNode) adopted.unshift(fmNode);
       holders[i].replaceChildren.apply(holders[i], adopted);
@@ -310,7 +357,159 @@
     }
   }
 
-  /* ── 3. routing ───────────────────────────────────────────────────────── */
+  /* ── 3. heading anchors ───────────────────────────────────────────────── */
+
+  // Byte-identical to slugify() in bin/hunk-plan. The agent authoring
+  // `[ADR](#doc-adr-0001/consistency-model)` predicts this slug from the
+  // heading text it read out of the file, and the pane half of that same hash
+  // is slugged in bash -- two slug rules in one URL is how a deep link silently
+  // stops resolving. (This is also why marked-gfm-heading-id is not used: it
+  // slugs with github-slugger, whose rules differ.)
+  function slugify(text) {
+    return String(text).toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
+  }
+
+  // Only doc panes. Group bodies live in the review pane alongside the
+  // renderer's own `group-<slug>` ids, and a heading in agent prose could
+  // collide with one.
+  function anchorHeadings(pane) {
+    var heads = pane.querySelectorAll('article.doc .md h1, article.doc .md h2, article.doc .md h3, article.doc .md h4, article.doc .md h5, article.doc .md h6');
+    var seen = {};
+    for (var i = 0; i < heads.length; i++) {
+      var base = slugify(heads[i].textContent);
+      if (!base) continue;
+      var slug = base;
+      var n = 2;
+      while (Object.prototype.hasOwnProperty.call(seen, slug)) slug = base + '-' + n++;
+      seen[slug] = 1;
+      if (!heads[i].id) heads[i].id = slug;
+    }
+  }
+
+  var TOC_MIN = 3; // a contents list for two headings is furniture, not navigation
+
+  function buildDocToc(pane) {
+    var article = pane.querySelector('article.doc');
+    if (!article || article.querySelector('nav.doc-toc')) return;
+    var heads = article.querySelectorAll('.md h2, .md h3');
+    if (heads.length < TOC_MIN) return;
+
+    var nav = document.createElement('nav');
+    nav.className = 'doc-toc';
+    // Unordered on purpose. An <ol> keeps counting items it does not mark, so
+    // indented h3 entries silently shift every number after them -- a doc whose
+    // own headings are numbered then disagrees with its own contents list.
+    var list = document.createElement('ul');
+    for (var i = 0; i < heads.length; i++) {
+      if (!heads[i].id) continue;
+      var li = document.createElement('li');
+      li.className = heads[i].nodeName === 'H3' ? 'sub' : '';
+      var a = document.createElement('a');
+      a.href = '#' + pane.getAttribute('data-doc') + '/' + heads[i].id;
+      a.textContent = heads[i].textContent;
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+    if (!list.childNodes.length) return;
+    nav.appendChild(list);
+    var after = article.querySelector('.doc-src');
+    article.insertBefore(nav, after ? after.nextSibling : article.firstChild);
+  }
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('anchor-flash');
+    void el.offsetWidth; // restart the animation rather than skip it on a repeat
+    el.classList.add('anchor-flash');
+  }
+
+  /* ── 4. scroll memory ─────────────────────────────────────────────────── */
+
+  // Remembering an absolute scrollY is wrong the moment the viewport reflows --
+  // a resized window, a zoom step, a rotated phone. So remember *what* was at
+  // the top of the viewport and how far above it sat, then recompute the offset
+  // against the live layout on the way back. Absolute y survives only as a
+  // fallback for a pane with no addressable block.
+  var ANCHOR_SEL = 'section.group, .tldr, nav.toc, .md > *, article.doc > *';
+  var scrollMemory = {};
+  var currentKey = 'review';
+  var expectedY = null;
+
+  function paneFor(key) {
+    return key === 'review' ? reviewPane : docPanes[key];
+  }
+
+  function scrollY() {
+    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  }
+
+  function navHeight() {
+    var nav = document.querySelector('nav.top');
+    return nav ? nav.offsetHeight : 0;
+  }
+
+  function applyScroll(y) {
+    expectedY = Math.max(0, Math.round(y));
+    window.scrollTo(0, expectedY);
+  }
+
+  // A late restore (mermaid finished, layout settled) must not yank the page
+  // out from under someone who has already started scrolling.
+  function userMoved() {
+    return expectedY !== null && Math.abs(Math.round(scrollY()) - expectedY) > 2;
+  }
+
+  function rememberScroll(key) {
+    var pane = paneFor(key);
+    if (!pane) return;
+    var list = pane.querySelectorAll(ANCHOR_SEL);
+    var limit = navHeight() + 1;
+    var best = -1;
+    var delta = 0;
+    // Last in document order that still starts at or above the viewport top:
+    // with nesting that is the innermost block the reader is looking at.
+    for (var i = 0; i < list.length; i++) {
+      var top = list[i].getBoundingClientRect().top;
+      if (top <= limit) {
+        best = i;
+        delta = top;
+      }
+    }
+    scrollMemory[key] = { y: scrollY(), i: best, delta: delta };
+  }
+
+  function restoreScroll(key) {
+    var m = scrollMemory[key];
+    if (!m) {
+      applyScroll(0);
+      return;
+    }
+    var pane = paneFor(key);
+    var list = pane ? pane.querySelectorAll(ANCHOR_SEL) : [];
+    if (m.i >= 0 && list[m.i]) {
+      // Put the remembered block back where it was relative to the viewport.
+      applyScroll(scrollY() + list[m.i].getBoundingClientRect().top - m.delta);
+      return;
+    }
+    applyScroll(m.y);
+  }
+
+  // Mermaid lays out after its pane becomes visible and changes the page
+  // height, so a single restore lands short. rAF covers plain layout; the
+  // promise covers the diagrams.
+  function restoreScrollSettled(key, pending) {
+    restoreScroll(key);
+    var again = function () {
+      if (!userMoved()) restoreScroll(key);
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(again);
+    if (pending && typeof pending.then === 'function') pending.then(again, function () {});
+  }
+
+  /* ── 5. routing ───────────────────────────────────────────────────────── */
 
   var reviewPane = null;
   var docPanes = {};
@@ -328,25 +527,61 @@
       var want = navLinks[i].getAttribute('data-nav');
       navLinks[i].classList.toggle('active', want === (isDoc ? slug : 'review'));
     }
-    renderMermaidIn(isDoc ? docPanes[slug] : reviewPane);
-    return !!isDoc;
+    return renderMermaidIn(isDoc ? docPanes[slug] : reviewPane);
+  }
+
+  // `#doc-adr-0001/consistency-model` -> pane `doc-adr-0001`, anchor
+  // `consistency-model`. A slug can never contain "/", so the split is
+  // unambiguous and needs no escaping.
+  function parseHash() {
+    var raw = location.hash.replace(/^#/, '');
+    var cut = raw.indexOf('/');
+    return cut === -1
+      ? { pane: raw, anchor: '' }
+      : { pane: raw.slice(0, cut), anchor: raw.slice(cut + 1) };
+  }
+
+  function scrollToId(root, id) {
+    var el = root.querySelector('[id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+    if (!el) return false;
+    applyScroll(scrollY() + el.getBoundingClientRect().top - navHeight());
+    flash(el);
+    return true;
   }
 
   function route() {
-    var hash = location.hash.replace(/^#/, '');
-    if (hash.indexOf('doc-') === 0 && docPanes[hash]) {
-      showPane(hash);
-      window.scrollTo(0, 0);
+    var h = parseHash();
+    var toDoc = h.pane.indexOf('doc-') === 0 && !!docPanes[h.pane];
+    var key = toDoc ? h.pane : 'review';
+
+    if (key !== currentKey) rememberScroll(currentKey);
+    var pending = showPane(toDoc ? h.pane : null);
+    currentKey = key;
+
+    if (toDoc) {
+      // An explicit anchor wins over memory: the reader followed a citation to
+      // a place, not back to where they last were. A heading that no longer
+      // exists degrades to the top of the doc rather than to nothing.
+      if (h.anchor) {
+        if (!scrollToId(docPanes[h.pane], h.anchor)) applyScroll(0);
+        return;
+      }
+      restoreScrollSettled(key, pending);
       return;
     }
-    showPane(null);
-    if (hash) {
-      var target = document.getElementById(hash);
-      if (target) target.scrollIntoView();
+
+    if (h.pane) {
+      var target = document.getElementById(h.pane);
+      if (target) {
+        applyScroll(scrollY() + target.getBoundingClientRect().top - navHeight());
+        flash(target);
+        return;
+      }
     }
+    restoreScrollSettled('review', pending);
   }
 
-  /* ── 4. mermaid ───────────────────────────────────────────────────────── */
+  /* ── 6. mermaid ───────────────────────────────────────────────────────── */
 
   var mermaidReady = false;
 
@@ -362,22 +597,25 @@
     mermaidReady = true;
   }
 
+  // Returns mermaid's promise when there is work to do, so scroll restore can
+  // wait for the height these diagrams add. Null when there is nothing pending.
   function renderMermaidIn(pane) {
-    if (!pane || typeof mermaid === 'undefined') return;
+    if (!pane || typeof mermaid === 'undefined') return null;
     initMermaid();
     var pending = pane.querySelectorAll('pre.mermaid:not([data-processed])');
-    if (!pending.length) return;
+    if (!pending.length) return null;
     try {
-      mermaid.run({ nodes: pending });
+      var run = mermaid.run({ nodes: pending });
+      return run && typeof run.then === 'function' ? run : null;
     } catch (e) {
-      /* a malformed diagram must not take the rest of the page down */
+      return null; /* a malformed diagram must not take the rest of the page down */
     }
   }
 
   /* ── boot ─────────────────────────────────────────────────────────────── */
 
   function boot() {
-    renderMarkdown();
+    renderBodies();
     externalLinksToNewTab();
     linkifyIssues(document.body);
     externalLinksToNewTab(); // links minted by linkifyIssues carry their own target
@@ -386,8 +624,14 @@
     var docs = document.querySelectorAll('.pane[data-doc]');
     for (var i = 0; i < docs.length; i++) {
       docPanes[docs[i].getAttribute('data-doc')] = docs[i];
+      anchorHeadings(docs[i]);
+      buildDocToc(docs[i]);
     }
     navLinks = Array.prototype.slice.call(document.querySelectorAll('nav.top a[data-nav]'));
+
+    // The browser's own restore fights ours on Back and wins intermittently,
+    // which reads as a jitter rather than as a bug.
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
     window.addEventListener('hashchange', route);
     route();

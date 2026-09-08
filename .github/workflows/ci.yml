@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # hunk-plan needs bash and jq and nothing else. Printing both versions up
+      # front makes a platform-specific failure readable from the log alone.
+      - name: Report the toolchain under test
+        run: |
+          bash --version | head -1
+          /bin/bash --version | head -1
+          jq --version
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+
+      - name: Render, gc and DOM assertions
+        run: CHROME='${{ steps.chrome.outputs.chrome-path }}' test/render_test.sh
+
+      # macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds a
+      # newer one whenever Homebrew has installed one -- so the system shell has
+      # to be named explicitly or a bash-4-ism ships without anyone noticing.
+      # This is not hypothetical: `hunk-plan gc` used an associative array.
+      - name: Same suite under /bin/bash
+        if: runner.os == 'macOS'
+        run: TEST_BASH=/bin/bash CHROME='${{ steps.chrome.outputs.chrome-path }}' test/render_test.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --severity=warning bin/hunk-plan install.sh test/render_test.sh
+
+  extension:
+    name: copy-path extension
+    runs-on: ubuntu-latest
+    # review-plan is deliberately not built here: hunk injects react and
+    # @opentui at load time, so its dev dependencies are ~450 MB of things the
+    # runtime never uses.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - working-directory: extension/copy-path
+        run: |
+          bun install --frozen-lockfile
+          bun test
+          bun run typecheck
