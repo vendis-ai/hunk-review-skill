@@ -296,9 +296,37 @@ JSON
   # dump-dom is one static render, so anything routing-dependent needs its own
   # run. Content conversion is not: every pane is converted at boot, visible or
   # not, so one dump covers md, html and text together.
+  # macOS ships no timeout(1), so this is hand-rolled. A browser that never
+  # returns has to fail the assertion in seconds: an un-timed --dump-dom once
+  # held a CI job for 19 minutes and would have held it for the full six-hour
+  # limit, because a Chrome version change made the call stop returning.
+  CHROME_TIMEOUT=${CHROME_TIMEOUT:-60}
+  with_timeout() { # with_timeout <seconds> <cmd...>
+    local secs="$1" waited=0 pid
+    shift
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ $waited -ge $secs ]]; then
+        kill -9 "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return 124
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    wait "$pid"
+  }
+
   chrome_dump() { # chrome_dump <url> <outfile>
-    "$CHROME" --headless --disable-gpu --no-sandbox --user-data-dir="$TMP/chrome" \
-      --window-size=1200,900 --virtual-time-budget=8000 --dump-dom "$1" >"$2" 2>/dev/null
+    : >"$2"
+    if with_timeout "$CHROME_TIMEOUT" "$CHROME" --headless --disable-gpu --no-sandbox \
+      --user-data-dir="$TMP/chrome" --window-size=1200,900 --virtual-time-budget=8000 \
+      --dump-dom "$1" >"$2" 2>/dev/null; then
+      return 0
+    fi
+    no "chrome returned nothing for $1 (timeout ${CHROME_TIMEOUT}s or non-zero exit)"
+    return 1
   }
 
   chrome_dump "file://$OUT#doc-adr-0001" "$TMP/dom.html"

@@ -12,6 +12,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -27,11 +28,28 @@ jobs:
           /bin/bash --version | head -1
           jq --version
 
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
+      # The runner images ship Google Chrome, so the DOM assertions need no
+      # third-party action to supply one. Using the image's own build also stops
+      # the browser moving under us: setup-chrome@v2 installed one whose
+      # --dump-dom never returned, and the job hung until it was cancelled.
+      # Missing Chrome fails loudly, because the suite's own fallback is to skip
+      # the DOM assertions silently, which is worse than a red job.
+      - name: Locate Chrome
+        run: |
+          for c in google-chrome google-chrome-stable \
+                   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
+            if command -v "$c" >/dev/null 2>&1; then found=$(command -v "$c"); break; fi
+            if [ -x "$c" ]; then found=$c; break; fi
+          done
+          if [ -z "${found:-}" ]; then
+            echo "::error::no Chrome on this runner; the DOM assertions would skip silently"
+            exit 1
+          fi
+          "$found" --version
+          echo "CHROME=$found" >> "$GITHUB_ENV"
 
       - name: Render, gc and DOM assertions
-        run: CHROME='${{ steps.chrome.outputs.chrome-path }}' test/render_test.sh
+        run: test/render_test.sh
 
       # macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds a
       # newer one whenever Homebrew has installed one -- so the system shell has
@@ -39,10 +57,11 @@ jobs:
       # This is not hypothetical: `hunk-plan gc` used an associative array.
       - name: Same suite under /bin/bash
         if: runner.os == 'macOS'
-        run: TEST_BASH=/bin/bash CHROME='${{ steps.chrome.outputs.chrome-path }}' test/render_test.sh
+        run: TEST_BASH=/bin/bash test/render_test.sh
 
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - run: shellcheck --severity=warning bin/hunk-plan install.sh test/render_test.sh
@@ -50,6 +69,7 @@ jobs:
   extension:
     name: copy-path extension
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # review-plan is deliberately not built here: hunk injects react and
     # @opentui at load time, so its dev dependencies are ~450 MB of things the
     # runtime never uses.
