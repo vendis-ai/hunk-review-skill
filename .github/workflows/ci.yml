@@ -28,13 +28,21 @@ jobs:
           /bin/bash --version | head -1
           jq --version
 
-      # The runner images ship Google Chrome, so the DOM assertions need no
-      # third-party action to supply one. Using the image's own build also stops
-      # the browser moving under us: setup-chrome@v2 installed one whose
-      # --dump-dom never returned, and the job hung until it was cancelled.
-      # Missing Chrome fails loudly, because the suite's own fallback is to skip
-      # the DOM assertions silently, which is worse than a red job.
+      # The DOM assertions run on Linux only. They exercise Blink, which does
+      # not vary by host OS, and headless --dump-dom does not return at all on
+      # the macOS runner image -- every call there hit the harness timeout.
+      # macOS earns its place in this matrix for its shell, not its browser:
+      # /bin/bash is 3.2. So Linux carries the browser pass and macOS the shell
+      # pass, and neither repeats the other's work.
+      #
+      # The runner image ships Google Chrome, so no third-party action is needed
+      # to supply one. Using the image's own build also stops the browser moving
+      # under us: setup-chrome@v2 installed one whose --dump-dom never returned,
+      # and the job hung for 19 minutes until it was cancelled. Missing Chrome
+      # fails loudly, because the suite's own fallback is to skip the DOM
+      # assertions silently, which is worse than a red job.
       - name: Locate Chrome
+        if: runner.os == 'Linux'
         run: |
           for c in google-chrome google-chrome-stable \
                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
@@ -48,7 +56,7 @@ jobs:
           "$found" --version
           echo "CHROME=$found" >> "$GITHUB_ENV"
 
-      - name: Render, gc and DOM assertions
+      - name: Test suite (DOM assertions on Linux only)
         run: test/render_test.sh
 
       # macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds a
