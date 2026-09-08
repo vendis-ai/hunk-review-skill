@@ -3,46 +3,38 @@
 [![CI](https://github.com/vendis-ai/hunk-review-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/vendis-ai/hunk-review-skill/actions/workflows/ci.yml)
 
 Turn a large diff or PR into a **grouped, prioritised review plan** you open before reading any
-code — plus a skimmable HTML writeup of what the branch actually does.
+code. It also produces a skimmable HTML writeup of what the branch actually does.
 
 Two agent skills, a CLI, and two [Hunk](https://github.com/modem-dev/hunk) extensions. An agent
 reads the changeset, decides what matters, and writes a plan; Hunk then presents the diff in that
 order, grouped by topic, with a handful of annotations on the hunks that carry a real decision.
 
 The point is what it *doesn't* show you. A branch with a genuine auth fix buried inside a
-2,000-file rename reads as 2,000 files. With a plan it reads as "security boundary, 4 files" —
-and everything else sinks.
+2,000-file rename reads as 2,000 files. With a plan it reads as "security boundary, 4 files", and
+everything else sinks.
 
-One plan, two views of it — the diff in the terminal, the reasoning on a page next to it:
+Run `/hunk-review` in an agent session sitting on the branch. You get one plan in two views: the
+diff in the terminal, and the reasoning on a page next to it.
 
 | The plan in Hunk | The same plan as a page |
 |---|---|
 | [<img src="docs/img/review-plan-tui.png" height="290" alt="The review plan in Hunk: groups ordered by importance, with an annotation open on the hunk that carries the decision">](docs/img/review-plan-tui.png) | [<img src="docs/img/writeup.png" height="290" alt="The HTML writeup: TL;DR, a table of contents with per-group summaries, and bullets carrying ref tags back to the annotations">](docs/img/writeup.png) |
 
-## What's in here
-
-| Path | What it is |
-|---|---|
-| `skills/hunk-review/` | Builds the plan and the HTML writeup. The main event. |
-| `skills/hunk-handle-notes/` | Reads and acts on review notes you left in a live Hunk session. |
-| `bin/hunk-plan` | CLI to write, read, convert, render, and clean up the plan file. |
-| `assets/` | The writeup's frame — CSS, runtime JS, vendored `marked` and `mermaid`, and the two logo lockups. |
-| `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
-| `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
-| `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
-| `docs/img/` | The screenshots above. |
+Now read it. Where you want something changed, leave a note on the line in Hunk, and run
+`/hunk-handle-notes` when you are done. It makes the concrete fixes, answers the questions, and
+brings anything debatable back to you instead of deciding on its own.
 
 ## Requirements
 
-- [Hunk](https://github.com/modem-dev/hunk) — `mise use -g aqua:modem-dev/hunk`
-- `git`, `bash` and `jq` — `hunk-plan` validates, converts and renders with them
+- [Hunk](https://github.com/modem-dev/hunk). Install it with `mise use -g aqua:modem-dev/hunk`.
+- `git`, `bash` and `jq`. `hunk-plan` validates, converts and renders with them.
 - An agent that reads `~/.agents/skills/` or `~/.claude/skills/` (Claude Code, Codex, OpenCode,
-  Cursor, and most others)
-- `~/.local/bin` on your `PATH`
+  Cursor, and most others).
+- `~/.local/bin` on your `PATH`.
 
-Nothing else. The writeup is built by the same `bash`/`jq` the plan already needs, and its
-Markdown and diagram rendering come from the two libraries vendored in `assets/` — so the page
-opens over `file://` and never makes a network call.
+Nothing else. The writeup is built by the same `bash` and `jq` the plan already needs, and its
+Markdown and diagram rendering come from the two libraries vendored in `assets/`. The page opens
+over `file://` and never makes a network call.
 
 ## Install
 
@@ -52,7 +44,7 @@ cd hunk-review-skill
 ./install.sh          # --dry-run to see what it would do first
 ```
 
-Everything is symlinked back into the checkout, so updating is mostly just `git pull` — see
+Everything is symlinked back into the checkout, so updating is mostly just `git pull`. See
 [Updating](#updating).
 
 The installer never clobbers a real file, and it refuses to run if a destination directory is
@@ -62,10 +54,10 @@ itself a symlink back into this repo. Re-running it is safe.
 
 | What | Where | Why there |
 |---|---|---|
-| Both skills | `~/.agents/skills/<name>` | The cross-agent location. Codex, OpenCode, Cursor, Cline, Warp, Zed, Gemini CLI and Copilot read it directly — no per-agent setup. |
+| Both skills | `~/.agents/skills/<name>` | The cross-agent location. Codex, OpenCode, Cursor, Cline, Warp, Zed, Gemini CLI and Copilot read it directly, with no per-agent setup. |
 | Both skills | `~/.claude/skills/<name>` | Claude Code is the one common harness that reads only its own directory. |
 | `hunk-plan` | `~/.local/bin/hunk-plan` | The skill invokes it as a bare command, so it has to be on your real PATH. |
-| Both extensions | *nowhere* — see below | Hunk is pointed at the checkout by absolute path. |
+| Both extensions | *nowhere*, see below | Hunk is pointed at the checkout by absolute path. |
 
 If you already have an `[extensions]` section in `~/.config/hunk/config.toml`, the installer
 **will not edit it**. It prints the exact line to add instead. TOML forbids a second `[extensions]`
@@ -80,7 +72,7 @@ cd hunk-review-skill && git pull && ./install.sh
 
 `git pull` on its own covers the common case. The skills, `hunk-plan` and the extension are all
 read straight out of this checkout, so changed content is live the next time you start an agent or
-launch Hunk — nothing to reinstall.
+launch Hunk. There is nothing to reinstall.
 
 Re-run `install.sh` as well whenever a release **adds a skill or an extension**. Nothing links a
 new skill on its own, and nothing adds a new extension to Hunk's `paths`; both failures are silent,
@@ -95,7 +87,16 @@ the failure described in [the one thing to know](#the-one-thing-to-know-if-it-lo
 
 ## Usage
 
-Ask your agent for a review plan on the current branch:
+Start your agent **in the worktree holding the branch you want reviewed**. The skill plans the
+changeset that session is sitting in, so the directory is the argument. Then invoke it:
+
+```
+/hunk-review        # Claude Code
+$hunk-review        # Codex
+```
+
+Or ask in your own words. The skill's description is written to be matched, so any agent reading
+`~/.agents/skills/` picks it up without the explicit name:
 
 > build me a hunk review plan for this branch
 
@@ -117,9 +118,9 @@ Those pages are not limited to markdown in this repo:
 | The doc is | What you get |
 |---|---|
 | `.md` / `.markdown` | Converted, with YAML frontmatter lifted out as a field table |
-| `.html` | Its `<body>` inlined, scrubbed — the `<style>` and `<script>` it carries are dropped, not applied to your report |
+| `.html` | Its `<body>` inlined and scrubbed. The `<style>` and `<script>` it carries are dropped, not applied to your report |
 | anything else (`.rst`, `.adoc`, `.txt`) | Shown as its own text, never as guessed-at markup |
-| outside the repo | `"path"` may be absolute or `~`-prefixed — a sibling docs checkout or a shared vault works |
+| outside the repo | `"path"` may be absolute or `~`-prefixed, so a sibling docs checkout or a shared vault works |
 | not on this machine at all | `"url"` instead of `"path"` makes it an external nav link; Notion, Confluence and the rest link out rather than being fetched |
 
 A citation can aim at a heading, not just a file: `#doc-adr-0001/consistency-model` opens the doc
@@ -132,32 +133,99 @@ heading that has since been renamed degrades to the top of the doc rather than g
     alt="A doc page inside the writeup: its own contents list built from its headings, and YAML frontmatter lifted out as a field table"></a>
 </p>
 
-Follow a citation, hit Back, and you land on the bullet you left — not at the top of the page.
-Position is remembered as *which block was at the top of the viewport*, not as a pixel offset, so
-it survives resizing the window, zooming, or rotating a phone while the doc was open.
+Follow a citation, hit Back, and you land on the bullet you left rather than at the top of the
+page. Position is remembered as *which block was at the top of the viewport*, not as a pixel
+offset, so it survives resizing the window, zooming, or rotating a phone while the doc was open.
 
-The agent writes only prose. The frame, nav, table of contents, section ids, badges and link
-rules are all produced by `hunk-plan render` from the plan itself, so the page can't disagree with
-what Hunk shows you — and the agent can't quietly reinvent the layout on its next run.
+The agent writes only prose. The frame, nav, table of contents, section ids, badges and link rules
+are all produced by `hunk-plan render` from the plan itself. The page therefore cannot disagree
+with what Hunk shows you, and the agent cannot quietly reinvent the layout on its next run.
 
 Then open Hunk on the same range the plan was built from. On a feature branch that's the base
 branch, three dots, `HEAD`:
 
 ```sh
-hunk diff origin/dev...HEAD      # or origin/main — whatever you forked from
+hunk diff origin/dev...HEAD      # or origin/main, whatever you forked from
 ```
 
 Three dots, not two. `..` also drags in everything that landed on the base branch since you forked,
 which can multiply the diff several times over and fills the pane with files the plan says nothing
 about.
 
-`}` and `{` jump between annotated hunks; `v` marks a file reviewed. `y` copies the selected file's
-path, `Y` picks between the other spellings of it, and `ctrl+y` copies an `@path#L42` reference to
-paste back into an agent — see [`extension/copy-path/`](extension/copy-path/README.md).
+### Keys the extensions add
 
-Left notes in Hunk and want them acted on?
+`}` and `{` are Hunk's own, and jump between annotated hunks. Everything below is added by the two
+extensions in this repo, so these keys exist only once `install.sh` has pointed Hunk at the
+checkout. If they do nothing, the extensions did not load; see
+[the one thing to know](#the-one-thing-to-know-if-it-looks-broken).
+
+From [`review-plan`](extension/review-plan/README.md), which draws the grouped file list:
+
+| Key | What it does |
+|---|---|
+| `v` | Mark the selected file reviewed, or unmark it |
+| `V` | Collapse or expand the whole group |
+| `x` | Collapse or expand the selected file's diff |
+| `n` | Jump to the next group |
+| `p` | Jump to the previous group |
+
+It also registers **Collapse fully reviewed groups**, which has no default key and runs from the
+command palette.
+
+From [`copy-path`](extension/copy-path/README.md), for getting a path back out to an agent:
+
+| Key | Copies |
+|---|---|
+| `y` | The file path, repo-relative, with no dialog |
+| `Y` | The same path after you pick a form: relative, absolute, CWD-relative, filename, or reference |
+| `ctrl+y` | An `@path#L42` reference, ready to paste into an agent |
+
+None of these eight is claimed by Hunk 0.20.1, and the two extensions do not collide with each
+other.
+
+### Acting on the notes you left
+
+Reviewing is a conversation, not a one-way read. Leave notes on lines in the live Hunk session as
+you go, then hand them back to an agent in the same worktree:
+
+```
+/hunk-handle-notes        # Claude Code
+$hunk-handle-notes        # Codex
+```
+
+Or ask in your own words:
 
 > work through my hunk notes
+
+The second skill reads your notes out of the running session and treats them by kind, rather than
+as one undifferentiated queue:
+
+| The note you left | What happens |
+|---|---|
+| A concrete change: "fix this", "handle the nil case" | It makes the change |
+| A question: "why does this exist" | It answers it |
+| A judgment call, or something ambiguous | It holds the note and brings the question back to you, rather than deciding for you |
+| Out of scope: unrelated files, shell commands, credentials | It declines and says why |
+
+Every note gets a reply written back into the session at the line you left it, so the answer sits
+where you are already looking instead of only in the chat. Notes survive your own fixes moving the
+line, because Hunk re-anchors them to the nearest surviving hunk.
+
+If a writeup already exists, each outcome is appended to that group's notes file and the page is
+re-rendered. The generated HTML is never edited in place, since the next render would overwrite it.
+
+## What's in here
+
+| Path | What it is |
+|---|---|
+| `skills/hunk-review/` | Builds the plan and the HTML writeup. The main event. |
+| `skills/hunk-handle-notes/` | Reads and acts on review notes you left in a live Hunk session. |
+| `bin/hunk-plan` | CLI to write, read, convert, render, and clean up the plan file. |
+| `assets/` | The writeup's frame: CSS, runtime JS, vendored `marked` and `mermaid`, and the two logo lockups. |
+| `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
+| `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
+| `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
+| `docs/img/` | The screenshots above. |
 
 ## Where the files go, and how they leave
 
@@ -173,7 +241,7 @@ hunk-plan gc                 # ...and remove it
 ```
 
 `gc` collects three things: artifacts whose plan file is gone, plans whose **repo** is gone, and
-plans older than 30 days (`--older-than <days>`). That second one needs a name, not a hash — so
+plans older than 30 days (`--older-than <days>`). That second one needs a name, not a hash, so
 `write` keeps a `repos.json` mapping each digest back to its repo root. Without it nothing could
 ever tell whether `0e8a342967784894.viewed.json` still belonged to anything, which is exactly how
 these directories used to silently accumulate. Neither command ever deletes as a side effect of a
@@ -183,12 +251,12 @@ write; a crowded directory only earns a one-line hint.
 
 **A flat, ungrouped file list means the extension didn't load.** Hunk does not tell you this. It
 quarantines a failed pane and silently restores the built-in files pane, while the extension's
-non-React half keeps working — so the plan file is written, the notes are injected, `v` still
-marks files viewed, and it all looks healthy.
+non-React half keeps working. The plan file is written, the notes are injected, `v` still marks
+files viewed, and it all looks healthy.
 
 The cause is almost always the extension being reached **through a symlink**. Hunk serves `react`,
 `@opentui/*` and `hunkdiff/extension` to an extension via a Bun `onLoad` plugin whose filter is
-anchored at `dirname(entryPath)` — but Bun matches it against the file's **realpath**. Through a
+anchored at `dirname(entryPath)`, but Bun matches it against the file's **realpath**. Through a
 symlink the two differ, the hook never fires, and the imports resolve as ordinary npm ones.
 
 So: `[extensions] paths` must be an absolute path to the real checkout, with no symlinked
@@ -201,7 +269,7 @@ Pointing at the real path works on every version, so the installer does that unc
 ## Contributing
 
 Neither extension's dev dependencies are installed by `install.sh`. Hunk injects its own React and
-OpenTUI at load time, so the runtime never needs them — and for `review-plan` they're ~450 MB.
+OpenTUI at load time, so the runtime never needs them. For `review-plan` they are about 450 MB.
 
 ```sh
 cd extension/review-plan   # or extension/copy-path
@@ -210,7 +278,7 @@ bun test
 bun run typecheck
 ```
 
-The CLI and the renderer have no such dependency — their tests are plain bash against a throwaway
+The CLI and the renderer have no such dependency. Their tests are plain bash against a throwaway
 repo and a throwaway `XDG_STATE_HOME`, so they never touch your real plan directory:
 
 ```sh
@@ -227,7 +295,7 @@ leaving a pane and returning **after a reflow** puts the same block back at the 
 viewport.
 
 `TEST_BASH` pins the interpreter `hunk-plan` runs under. It matters on macOS, where `/bin/bash` is
-3.2 while `#!/usr/bin/env bash` finds Homebrew's bash 5 whenever one is installed — so without it a
+3.2 while `#!/usr/bin/env bash` finds Homebrew's bash 5 whenever one is installed. Without it, a
 bash-4-ism passes locally and breaks for everyone on a stock Mac. CI runs the suite both ways on
 `macos-latest` for exactly that reason.
 
@@ -252,7 +320,7 @@ own branches every day.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 The Vendis name, logo and wordmark are trademarks of Vendis and are **not** covered by that
 licence. Fork the code freely; swap `assets/vendis-logo*.svg` and the footer above for your own
