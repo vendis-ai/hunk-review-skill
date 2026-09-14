@@ -240,7 +240,7 @@ cat <<'NEXT'
     hunk-plan --help
 
   Verify the extensions load (open hunk in any repo with changes; the files
-  pane should be grouped rather than flat, and `y` should copy a path):
+  pane should be grouped rather than flat, and `Y` should copy a path):
     hunk
 
   A silently quarantined extension still shows a working files pane. If groups

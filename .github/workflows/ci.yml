@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # keymap drift is upstream's to cause, so it has to be checked without a
+  # commit here to trigger it. Mondays, early.
+  schedule:
+    - cron: "17 5 * * 1"
 
 permissions:
   contents: read
@@ -72,7 +76,20 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck --severity=warning bin/hunk-plan install.sh test/render_test.sh
+      - run: |
+          shellcheck --severity=warning \
+            bin/hunk-plan install.sh test/render_test.sh test/keymap_check.sh
+
+  keymap:
+    name: keymap vs latest hunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Red here means a hunk release has taken a chord an extension binds, and
+    # that command is already unbound for everyone who has updated. It can go
+    # red without a commit in this repo -- that is the point of the job.
+    steps:
+      - uses: actions/checkout@v7
+      - run: test/keymap_check.sh
 
   extension:
     name: copy-path extension

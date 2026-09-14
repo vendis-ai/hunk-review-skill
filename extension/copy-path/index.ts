@@ -122,18 +122,19 @@ export default function copyPath(hunk: HunkExtensionAPI): void {
 
   const config = readClipboardConfig(hunk.config);
 
-  hunk.registerCommand({ id: "path", title: "Copy file path", key: "y" }, async (ctx) => {
+  hunk.registerCommand({ id: "path", title: "Copy file path", key: "Y" }, async (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
       ctx.notify("copy-path: no file selected", "warning");
       return;
     }
     // Hunk reports paths repo-root-relative already, which is the spelling
-    // worth having on one keystroke. Everything else is behind `Y`.
+    // worth having on one keystroke. Every other form is behind the chooser,
+    // which ships unbound and runs from the Extensions menu.
     await copyAndReport(ctx, config, file.path);
   });
 
-  hunk.registerCommand({ id: "pathVariant", title: "Copy file path (choose form)", key: "Y" }, async (ctx) => {
+  hunk.registerCommand({ id: "pathVariant", title: "Copy file path (choose form)" }, async (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
       ctx.notify("copy-path: no file selected", "warning");

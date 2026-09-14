@@ -10,30 +10,39 @@ absolute, filename, or as an `@path#Lx` reference -- on a keystroke.
 
 ## Why it exists
 
-Hunk has no copy-path command. Its command registry carries exactly one entry
-with "copy" in the name -- `hunk.view.toggleCopyDecorations` -- and that only
-controls whether line numbers and `+`/`-` markers ride along when you drag a
-mouse selection. Copying anything at all is mouse-driven, which is no use when
-the thing you want is the *path*, and the reason you want it is to paste it
-into an agent.
+Hunk has no copy-path command. It can copy a *selection* -- 0.22.0 added
+`hunk.review.copySelection` on `y`, over a visual range -- and
+`hunk.view.toggleCopyDecorations` controls whether line numbers and `+`/`-`
+markers ride along. Neither gives you the path, which is the thing you actually
+want to paste into an agent.
 
 `[keybindings]` cannot close the gap: it rebinds commands that already exist.
 So this adds them. Command ids live under this extension's own id, and `hunk`
-is a reserved id, so nothing here can shadow a built-in -- now or after a
-future upstream release adds its own copy commands.
+is a reserved id, so no command here can ever shadow a built-in one.
+
+The *chords* are another matter, and the distinction is worth keeping straight:
+ids are namespaced, keys are not. A built-in wins any chord it shares with an
+extension, which is what happened to this extension's original `y` in 0.22.0.
+`test/keymap_check.sh` in the repo root now watches for the next one.
 
 ## Key bindings
 
 | Key | Command | Copies |
 | --- | --- | --- |
-| `y` | Copy file path | `extension/copy-path/index.ts` -- repo-relative, no dialog |
-| `Y` | Copy file path (choose form) | A select dialog over every distinct spelling |
+| `Y` | Copy file path | `extension/copy-path/index.ts` -- repo-relative, no dialog |
 | `ctrl+y` | Copy `@path#Lx` reference | `@extension/copy-path/index.ts#L42` |
+| *(unbound)* | Copy file path (choose form) | A select dialog over every distinct spelling; reachable from the Extensions menu |
 
-None of the three chords is claimed by hunk 0.20.1, and none collides with
-[`review-plan`](../review-plan/README.md) next door, which takes `v x V n p`.
+The plain copy sits on `Y` rather than `y` because hunk 0.22.0 took `y` for
+`hunk.review.copySelection`. A built-in wins the conflict and leaves the
+extension command unbound with only a startup notice, and hunk's own commands
+now hold 21 of the 26 lowercase letters -- so the shifted key is the one with a
+future. The chooser ships unbound for the same reason: the fewer defaults an
+extension declares, the less of hunk's key space it is standing in. Neither
+chord collides with [`review-plan`](../review-plan/README.md) next door, which
+takes `V alt+v X Z > <`.
 
-## The forms `Y` offers
+## The forms the chooser offers
 
 | Label | Value |
 | --- | --- |

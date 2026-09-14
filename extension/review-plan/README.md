@@ -187,12 +187,25 @@ A file present in the changeset but not mentioned in the plan still shows up
 
 | Key | Command | Effect |
 | --- | --- | --- |
-| `v` | Toggle file reviewed | Marks/unmarks the selected file as viewed, against its current patch content, and collapses/expands its diff |
-| `x` | Collapse/expand file diff | Collapses the selected file's diff to a single row, independently of whether it is reviewed |
-| `V` | Collapse/expand group | Toggles the collapse state of the group containing the selected file |
-| `n` | Next group | Jumps to the first file of the next group |
-| `p` | Previous group | Jumps to the first file of the previous group |
+| `V`, `alt+v` | Toggle file reviewed | Marks/unmarks the selected file as viewed, against its current patch content, and collapses/expands its diff |
+| `X` | Collapse/expand file diff | Collapses the selected file's diff to a single row, independently of whether it is reviewed |
+| `Z` | Collapse/expand group | Toggles the collapse state of the group containing the selected file |
+| `>` | Next group | Jumps to the first file of the next group |
+| `<` | Previous group | Jumps to the first file of the previous group |
 | *(unbound)* | Collapse fully reviewed groups | Reachable from the Extensions menu; collapses every group whose files are all marked viewed |
+
+Every default here is a shifted letter or a punctuation key, which is a
+deliberate choice about where hunk itself is likely to expand. Hunk's own
+commands hold 21 of the 26 lowercase letters; 0.22.0 alone claimed `v`, `y` and
+`n`, which is where three of these bindings used to be. A built-in wins the
+conflict, and the extension command is simply left unbound with a startup
+notice -- so a lowercase default is a binding with a shelf life. Group
+navigation takes `<` and `>` to sit one tier above hunk's own `,` and `.` for
+files.
+
+Toggle file reviewed declares two chords rather than one. Hunk refuses
+conflicting chords individually and binds whatever survives, so `alt+v` keeps
+the extension's whole point reachable if a later hunk release takes `V`.
 
 A reviewed file's row in the pane is also faded toward the background behind
 it, so a finished group stops competing for attention. The `✓` is left at full
@@ -201,7 +214,7 @@ strength -- it is the reason the row went quiet.
 ## Collapsing a file's diff
 
 Marking a file reviewed collapses its diff, the way a viewed file collapses on
-a pull request. Unmarking brings the diff back, and `x` collapses or expands
+a pull request. Unmarking brings the diff back, and `X` collapses or expands
 any file without touching its reviewed state.
 
 A collapsed file is one row per hunk: the first carries the path, hunk count,
@@ -215,7 +228,7 @@ Two limits come from hunk itself, not from this extension:
 
 - **A file carrying a note with no line range will not collapse.** Hunk keeps
   any file with an unanchorable visible note on the raw diff and never consults
-  a file view for it, so `v` and `x` say so rather than looking dead. Plan
+  a file view for it, so `V` and `X` say so rather than looking dead. Plan
   annotations never hit this -- a file-scoped one is anchored to the first hunk
   on injection -- but a note from a real `--agent-context` sidecar can, and
   there is nothing this extension can do about it.

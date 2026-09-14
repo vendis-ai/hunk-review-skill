@@ -216,7 +216,7 @@ function moveToAdjacentGroup(ctx: ExtensionCommandContext, direction: 1 | -1): v
 // Presentation is host state, per file, and only ever set for the file under
 // the cursor -- there is no API to collapse a set of files at once, and a
 // reload drops the presentation entirely. So nothing here is persisted: the
-// collapse follows `v` and the manual toggle, and comes back expanded after
+// collapse follows `V` and the manual toggle, and comes back expanded after
 // a reload.
 // ---------------------------------------------------------------------------
 
@@ -657,7 +657,7 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     layout: (input) => buildCollapsedLayout(collapsedFileOf(input.file)),
   });
 
-  hunk.registerCommand({ id: "toggleViewed", title: "Toggle file reviewed", key: "v" }, (ctx) => {
+  hunk.registerCommand({ id: "toggleViewed", title: "Toggle file reviewed", key: ["V", "alt+v"] }, (ctx) => {
     const file = ctx.selection.file;
     const state = store.getSnapshot();
     if (!file || !state.repoRoot) return;
@@ -671,13 +671,13 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     setSelectedFileCollapsed(ctx, status === "viewed");
   });
 
-  hunk.registerCommand({ id: "toggleCollapsed", title: "Collapse/expand file diff", key: "x" }, (ctx) => {
+  hunk.registerCommand({ id: "toggleCollapsed", title: "Collapse/expand file diff", key: "X" }, (ctx) => {
     const file = ctx.selection.file;
     if (!file) return;
     setSelectedFileCollapsed(ctx, !store.getSnapshot().collapsedFiles.has(file.path));
   });
 
-  hunk.registerCommand({ id: "toggleGroup", title: "Collapse/expand group", key: "V" }, (ctx) => {
+  hunk.registerCommand({ id: "toggleGroup", title: "Collapse/expand group", key: "Z" }, (ctx) => {
     const file = ctx.selection.file;
     const state = store.getSnapshot();
     if (!file || !state.ordered) return;
@@ -689,11 +689,11 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     store.setState({ ...state, collapsed: nextCollapsed });
   });
 
-  hunk.registerCommand({ id: "nextGroup", title: "Next group", key: "n" }, (ctx) => {
+  hunk.registerCommand({ id: "nextGroup", title: "Next group", key: ">" }, (ctx) => {
     moveToAdjacentGroup(ctx, 1);
   });
 
-  hunk.registerCommand({ id: "previousGroup", title: "Previous group", key: "p" }, (ctx) => {
+  hunk.registerCommand({ id: "previousGroup", title: "Previous group", key: "<" }, (ctx) => {
     moveToAdjacentGroup(ctx, -1);
   });
 

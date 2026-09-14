@@ -163,25 +163,33 @@ From [`review-plan`](extension/review-plan/README.md), which draws the grouped f
 
 | Key | What it does |
 |---|---|
-| `v` | Mark the selected file reviewed, or unmark it |
-| `V` | Collapse or expand the whole group |
-| `x` | Collapse or expand the selected file's diff |
-| `n` | Jump to the next group |
-| `p` | Jump to the previous group |
+| `V` | Mark the selected file reviewed, or unmark it. `alt+v` does the same |
+| `Z` | Collapse or expand the whole group |
+| `X` | Collapse or expand the selected file's diff |
+| `>` | Jump to the next group |
+| `<` | Jump to the previous group |
 
 It also registers **Collapse fully reviewed groups**, which has no default key and runs from the
-command palette.
+Extensions menu.
 
 From [`copy-path`](extension/copy-path/README.md), for getting a path back out to an agent:
 
 | Key | Copies |
 |---|---|
-| `y` | The file path, repo-relative, with no dialog |
-| `Y` | The same path after you pick a form: relative, absolute, CWD-relative, filename, or reference |
+| `Y` | The file path, repo-relative, with no dialog |
 | `ctrl+y` | An `@path#L42` reference, ready to paste into an agent |
 
-None of these eight is claimed by Hunk 0.20.1, and the two extensions do not collide with each
-other.
+It also registers **Copy file path (choose form)**, which offers the same path as relative,
+absolute, CWD-relative, filename, or reference. Like **Collapse fully reviewed groups**, it has no
+default key and runs from the Extensions menu.
+
+All of these sit in Hunk's shifted and punctuation key space on purpose. Hunk's own commands have
+claimed 21 of the 26 lowercase letters, and 0.22.0 took three more in one release -- `v`, `y` and
+`n`, which is precisely where these bindings used to live. A built-in wins a chord conflict and the
+extension command is left unbound with only a startup notice to say so, which makes a lowercase
+default a binding with a shelf life. Marking a file reviewed also ships a second chord, `alt+v`,
+because Hunk drops only the conflicting chord and keeps the rest: the one command the extension
+exists for stays reachable even if `V` is claimed later.
 
 ### Acting on the notes you left
 
@@ -225,6 +233,7 @@ re-rendered. The generated HTML is never edited in place, since the next render 
 | `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
 | `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
 | `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
+| `test/keymap_check.sh` | Fails when a new Hunk release claims a key one of the extensions binds. |
 | `docs/img/` | The screenshots above. |
 
 ## Where the files go, and how they leave
@@ -251,7 +260,7 @@ write; a crowded directory only earns a one-line hint.
 
 **A flat, ungrouped file list means the extension didn't load.** Hunk does not tell you this. It
 quarantines a failed pane and silently restores the built-in files pane, while the extension's
-non-React half keeps working. The plan file is written, the notes are injected, `v` still marks
+non-React half keeps working. The plan file is written, the notes are injected, `V` still marks
 files viewed, and it all looks healthy.
 
 The cause is almost always the extension being reached **through a symlink**. Hunk serves `react`,
@@ -285,6 +294,7 @@ repo and a throwaway `XDG_STATE_HOME`, so they never touch your real plan direct
 test/render_test.sh                               # frame, ordering, slugs, doc entries, gc, clear
 CHROME=google-chrome-stable test/render_test.sh   # ...plus the DOM behaviour
 TEST_BASH=/bin/bash test/render_test.sh           # ...under a pinned shell
+test/keymap_check.sh                              # extension chords vs the newest Hunk release
 ```
 
 The `CHROME` pass is the one that matters when touching `assets/report.js`: it asserts that
