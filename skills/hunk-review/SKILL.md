@@ -216,8 +216,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    this.** Re-deriving that plumbing by hand is exactly how it drifts, and the renderer already
    knows every group's title, summary and importance from the plan you just wrote.
 
-   Scaffold the report directory first. It creates one Markdown file per group, named with the
-   exact slug the renderer will use, so you never compute a slug yourself:
+   Scaffold the report directory first. It creates the files a group section is built from, each
+   named with the exact slug the renderer will use, so you never compute a slug yourself:
 
        hunk-plan report-dir --init
 
@@ -225,16 +225,44 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    switching between this and other work all day. Paragraphs of narrative are the failure mode
    this step used to produce — don't.
 
+   A group section is read by someone who has opened no code yet, so it is written in the order
+   they need it: what the issue is and what fixes it, then one concrete instance of it, then the
+   reasoning. That is three files per group, and the renderer emits them in that order whichever
+   order you write them in.
+
+   Assume a capable developer who has never worked in this code, and who arrived from a different
+   topic two minutes ago. Every section stands on its own: the first time a class, table or job
+   appears, say in half a line what it actually is — `InviteMinter` (the service that turns an
+   accepted invite into a membership row) — and never refer back to "the previous group". If a
+   sentence only parses for someone who has already read the diff, it isn't written yet. That is
+   a gloss, not a tutorial: one clause, then carry on.
+
    - `_tldr.md` — exactly 3 bullets: what the branch does, the single biggest risk, the one
      thing to check first. The only prose-adjacent text above the fold.
-   - `<group-slug>.md` — one file per group, **3-6 short bullets**, not sentences. The fact, the
+   - `<group-slug>.why.md` — **required, 3-5 sentences of plain prose.** Start from what this
+     code does at all, not from what changed in it, then say what was wrong or missing and what
+     this change does about it. Write it for someone who has read nothing but the group title:
+     name the thing, say why it had to change, say what solves it. No bullets, no ref tags, no
+     verdict — the badge covers that. It is not the group's one-line `summary` reworded: the
+     summary says what the topic *is*, the why says what the *problem* was. "Signup accepted any
+     email domain, so a partner could invite themselves in. The allowlist gate now runs before
+     the invite is minted rather than after" is a why; "this hardens signup" is not.
+   - `<group-slug>.example.md` — **one concrete instance, 2-8 lines.** Required on every
+     `Critical` and `Review` group. Skip it on a `Skim` group where you would have to invent one
+     — an unearned example is the same verbosity as an unearned diagram. Use whichever form the
+     topic actually has: a user story, a record before and after, a two-line request/response, a
+     short table of input to outcome. Take identifiers, paths and values from the diff; an
+     invented example that contradicts the code is worse than none. Keep the fence short — this
+     is the instance that makes the bullets land, not a transcript.
+   - `<group-slug>.md` — the reasoning: **3-6 short bullets**, not sentences. The fact, the
      risk, or the check, nothing narrating around it. Caveman register is fine: "Claim before
      read = retry eats valid data" beats "The reordering here matters because it changes what
-     happens on retry." Do not repeat the group's title or summary at the top — the renderer
-     already emits both.
+     happens on retry." A bullet may carry a three-to-six-word gloss in parentheses rather than
+     assume the term — it is still a bullet. Do not repeat the group's title, its summary, or
+     its why — the renderer already emits all three above these bullets.
    - `meta.json` — `title`, `subtitle` (the branch/base and the counts), and `docs` (step 3).
 
-   Inside a group file, Markdown with inline HTML passthrough:
+   Inside any of these files, Markdown with inline HTML passthrough:
 
    - **Ref tags** on any bullet a `[A]`/`[B]`/`[C]` annotation (step 7) backs:
      `` `delivery.rb` <span class="ref">ref A</span> ``.
@@ -259,9 +287,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      works too, and a `#123` inside a code fence is deliberately left alone. Do not hand-write a
      GitHub URL; a wrong guess is worse than no link.
    - **External links** need no `target` — every `http(s)` link opens in a new tab by rule.
-   - **One `<details><summary>why</summary>…</details>`** per group for reasoning that doesn't
-     fit a bullet — trade-offs, the history behind a fix. Closed by default; there on demand,
-     not blocking the skim.
+   - **One `<details><summary>Trade-offs</summary>…</details>`** per group, in the reasoning
+     file, for what doesn't fit a bullet — a trade-off, the history behind a fix. Closed by
+     default; there on demand, not blocking the skim. Don't label it "why": that word already
+     names the block above the example, and two of them in one section reads as a mistake.
    - **A Mermaid diagram** only when the group's substance is a sequence, a state machine, or a
      race — the shape bullets are worst at. Skip it for a group that's just a file list or a
      one-shot change; an unearned diagram is still verbosity. `sequenceDiagram` for
@@ -274,8 +303,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    (1-2 → `Critical`, 3-5 → `Review`, 6+ → `Skim`, and `Skim` groups render closed) — so get
    `importance` right in step 6 rather than trying to influence the badge here.
 
-   A group whose file you leave empty renders with a visible "no writeup" marker and a warning
-   on stderr. That is a bug, not a way to skip a group: use `importance` to sink it instead.
+   A group whose reasoning file you leave empty renders with a visible "no writeup" marker and a
+   warning on stderr; an empty `.why.md` warns on stderr alone, so read that output rather than
+   waiting for the page to look wrong. Both are bugs, not ways to skip a group: use `importance`
+   to sink it instead.
 
    Then render:
 

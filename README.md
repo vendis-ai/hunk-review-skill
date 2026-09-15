@@ -104,10 +104,11 @@ It reports the changeset size, groups the files by topic, orders the groups by w
 likely to get wrong, annotates only the hunks that carry a decision, and hands you back two things:
 a command to open the plan in Hunk, and a path to the HTML writeup.
 
-The writeup is a self-contained local file: a verdict badge per group, a few bullets each, a
-collapsed `why` for the reasoning, a Mermaid diagram where the substance is a sequence or a race,
-and a table of contents. `Skim`-tier groups start collapsed, so the page opens showing only what
-needs a decision.
+The writeup is a self-contained local file, and every group reads in the order a reviewer needs
+it: what the issue is and what solves it, one concrete example, then the bullets. Around that, a
+verdict badge per group, a collapsed block for the trade-offs, a Mermaid diagram where the
+substance is a sequence or a race, and a table of contents. `Skim`-tier groups start collapsed,
+so the page opens showing only what needs a decision.
 
 Any ADR, RFC or runbook the branch leans on becomes **its own page inside that same file**,
 converted from its copy on disk and reachable from a nav bar across the top. GitHub `#123`

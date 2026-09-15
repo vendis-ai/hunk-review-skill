@@ -49,8 +49,9 @@ Commands:
                         Print the report directory (<plan>.report/) that holds
                         the agent-authored body content for `render`. With
                         --init, create it and scaffold an empty meta.json,
-                        _tldr.md, and one <group-slug>.md per group in the
-                        plan -- so nothing has to derive a slug by hand.
+                        _tldr.md, and a <group-slug>.why.md, .example.md and
+                        .md per group in the plan -- so nothing has to derive
+                        a slug by hand.
                         Existing files are never overwritten.
   render [--in-repo] [-o <path>]
                         Render the plan plus its report directory into a
@@ -520,6 +521,10 @@ META
     [[ -f "$dir/_tldr.md" ]] || : >"$dir/_tldr.md"
     while IFS=$'\t' read -r slug _ _ _ _; do
       [[ -n $slug ]] || continue
+      # One file per part of a group section, in the order they render: the
+      # orientation, the concrete instance, then the reasoning bullets.
+      [[ -f "$dir/$slug.why.md" ]] || : >"$dir/$slug.why.md"
+      [[ -f "$dir/$slug.example.md" ]] || : >"$dir/$slug.example.md"
       [[ -f "$dir/$slug.md" ]] || : >"$dir/$slug.md"
     done < <(jq -r "$GROUPS_JQ" "$plan")
     echo "$PROG: scaffolded $dir" >&2
@@ -655,6 +660,7 @@ cmd_render() {
 
     for ((i = 0; i < ${#g_slug[@]}; i++)); do
       local body="$dir/${g_slug[i]}.md" notes="$dir/${g_slug[i]}.notes.md"
+      local why="$dir/${g_slug[i]}.why.md" example="$dir/${g_slug[i]}.example.md"
       local label="${g_tier[i]}"
       case "$label" in
         critical) label="Critical" ;;
@@ -669,6 +675,25 @@ cmd_render() {
       [[ ${g_coll[i]} == 1 ]] && printf '    </summary>\n'
       [[ -n ${g_summary[i]} ]] &&
         printf '    <p class="group-summary">%s</p>\n' "$(esc "${g_summary[i]}")"
+
+      # Orientation before reasoning: what the topic is and what it fixes, then
+      # one concrete instance of it. A group without a why still renders -- a
+      # report directory written before these files existed must not break --
+      # but it is a gap in the writeup, so say so on stderr.
+      if [[ -s $why ]]; then
+        printf '    <div class="why"><h3>Why</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$why")"
+        printf '</div></div>\n'
+      else
+        echo "$PROG: no why for group '${g_title[i]}' (expected $why)" >&2
+      fi
+
+      # The example is optional by design: a Skim group would have to invent one.
+      if [[ -s $example ]]; then
+        printf '    <div class="example"><h3>Example</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$example")"
+        printf '</div></div>\n'
+      fi
 
       if [[ -s $body ]]; then
         printf '    <div class="md"><script type="text/markdown">%s</script></div>\n' "$(b64e "$body")"

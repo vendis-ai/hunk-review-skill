@@ -93,6 +93,17 @@ section.group > details > summary h2 { display: inline-flex; }
 .group-summary { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.6rem; }
 .no-writeup { color: var(--muted); font-style: italic; font-size: 0.9rem; }
 
+/* Orientation blocks above a group's bullets. Inset on the group's own panel,
+   so they take the code ground; anything inside them that normally uses that
+   ground has to swap back, or it disappears. `div.why` is deliberate: it must
+   not catch the collapsed `details.why` an author may write inside the body. */
+div.why, div.example { background: var(--code-bg); border-radius: 8px; padding: 0.7rem 0.95rem; margin: 0 0 0.8rem; }
+div.why { border-left: 3px solid var(--accent); }
+div.example { border-left: 3px solid var(--muted); }
+div.why h3, div.example h3 { margin-top: 0; }
+div.why code, div.example code { background: var(--panel); }
+div.why .md pre, div.example .md pre { background: var(--panel); }
+
 /* markdown-rendered bodies */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }

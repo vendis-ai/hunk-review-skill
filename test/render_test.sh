@@ -157,6 +157,10 @@ DIR=$(run_plan report-dir --init 2>/dev/null)
 [[ -f "$DIR/security-boundary.md" ]] && ok "slugifies a plain title" || no "slugifies a plain title"
 [[ -f "$DIR/removal-inputs.md" ]] &&
   ok "slugifies punctuation ('Removal: Inputs')" || no "slugifies punctuation ('Removal: Inputs')"
+# A group section is three files: the orientation, the example, the bullets.
+[[ -f "$DIR/security-boundary.why.md" ]] && ok "scaffolds a why per group" || no "scaffolds a why per group"
+[[ -f "$DIR/security-boundary.example.md" ]] &&
+  ok "scaffolds an example per group" || no "scaffolds an example per group"
 
 echo "$$" >"$DIR/security-boundary.md"
 run_plan report-dir --init >/dev/null 2>&1
@@ -184,6 +188,11 @@ printf -- '- One line of TL;DR, closes #12.\n' >"$DIR/_tldr.md"
 printf -- '- Body for the security group.\n' >"$DIR/security-boundary.md"
 printf -- '- Tooling churn only.\n' >"$DIR/dev-tooling.md"
 : >"$DIR/removal-inputs.md" # deliberately empty: exercises the no-writeup path
+printf 'Signup accepted any domain. The gate now runs first.\n' >"$DIR/security-boundary.why.md"
+printf 'bob@partner.io signs up -> gate misses -> invite minted\n' >"$DIR/security-boundary.example.md"
+# A Skim group legitimately has no example, and removal-inputs has neither:
+# a report directory written before these files existed must still render.
+printf 'Tooling only, no product effect.\n' >"$DIR/dev-tooling.why.md"
 
 OUT=$(run_plan render 2>"$TMP/render.err" | sed 's/^hunk-plan: wrote //')
 [[ -f $OUT ]] && ok "writes the html" || no "writes the html"
@@ -200,6 +209,26 @@ assert_eq "$ORDER" 'id="group-security-boundary" id="group-removal-inputs" id="g
 
 assert_in 'No writeup was written' "$OUT" "flags a group with no body"
 assert_in 'no body for group' "$TMP/render.err" "warns on stderr about a missing body"
+assert_in '<div class="why"><h3>Why</h3>' "$OUT" "renders a group's why"
+assert_in '<div class="example"><h3>Example</h3>' "$OUT" "renders a group's example"
+assert_in 'no why for group' "$TMP/render.err" "warns on stderr about a missing why"
+
+# Order within a section, and the two groups that omit a part: a Skim group
+# carries a why but no example, and a group with neither still renders -- a
+# report directory written before these files existed must not break.
+SEC=$(awk '/id="group-security-boundary"/,/<\/section>/' "$OUT")
+assert_eq "$(printf '%s' "$SEC" | grep -o 'class="why"\|class="example"' | tr '\n' ' ')" \
+  'class="why" class="example" ' "the why renders above the example"
+if printf '%s' "$(awk '/id="group-dev-tooling"/,/<\/section>/' "$OUT")" | grep -q 'class="example"'; then
+  no "a group with no example gets no example block"
+else
+  ok "a group with no example gets no example block"
+fi
+if printf '%s' "$(awk '/id="group-removal-inputs"/,/<\/section>/' "$OUT")" | grep -q 'class="why"'; then
+  no "a group with no why renders without one"
+else
+  ok "a group with no why renders without one"
+fi
 assert_in 'Not found on disk' "$OUT" "renders a card for a missing doc"
 assert_in 'referenced doc not found' "$TMP/render.err" "warns on stderr about a missing doc"
 assert_in '"repo":"acme/widgets"' "$OUT" "derives owner/repo from the origin remote"
