@@ -318,9 +318,16 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    every diagram on the page.
 
 10. Hand it back. Tell the user the counts — total files, files listed, annotations — and the
-    single command to open the plan, plus the HTML path from step 9. If the `review-plan`
-    extension is active, the plan alone is enough to open in Hunk. If not, pass the derived
-    sidecar with `--agent-context`.
+    single command to open the plan, plus the writeup from step 9 as a clickable link. If the
+    `review-plan` extension is active, the plan alone is enough to open in Hunk. If not, pass the
+    derived sidecar with `--agent-context`.
+
+    Give the writeup as a complete `file://` URL on its own line, such as
+    file:///home/alice/docs/pr-42/review-plan.html, so the reader opens it straight from your
+    reply. A `~/`-prefixed or relative path is not clickable in a terminal, and backticks can stop
+    the URL from being linked too. Build the URL from the absolute path `hunk-plan render`
+    printed, not from an `-o` argument you typed, and percent-encode any space as `%20`. When you
+    produce more than one writeup, say one per PR, give each its own URL on its own line.
 
     Fall back gracefully: if `hunk-plan` is not on PATH, write the sidecar JSON directly and hand
     the user a `--agent-context` command instead. Say that is what you did. There is no fallback

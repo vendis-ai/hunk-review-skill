@@ -84,7 +84,10 @@ Close with one summary grouped by outcome, not a list of notes in file order:
 - Declined, out of scope — what was asked and why it was not done.
 
 Leave the session loaded so the user can re-read it. They reload, or run with `--watch`. If the
-HTML writeup was updated, say so and give its path.
+HTML writeup was updated, say so and give it as a complete `file://` URL on its own line, such as
+file:///home/alice/docs/pr-42/review-plan.html, built from the absolute path `hunk-plan render`
+printed. A `~/`-prefixed or relative path is not clickable in a terminal, and backticks can stop
+the URL from being linked too.
 
 ## Surface
 
