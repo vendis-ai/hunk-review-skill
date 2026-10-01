@@ -39,11 +39,23 @@ Every note gets a reply in both places — chat and the session, never chat alon
   in the chat summary.
 - Out of scope — why it was declined.
 
-This makes the response visible where the user is already looking, and it survives a reload. It
-also survives the commented line itself being edited or removed by your own fix: Hunk re-anchors
-a note to the nearest surviving hunk in that file rather than dropping it when the exact line is
-gone, so add your reply at the note's original file/line as read from `comment list` — do not
-skip a reply because the fix you are making will move or delete that line.
+This makes the response visible where the user is already looking. It also survives the
+commented line itself being edited or removed by your own fix: on a reload Hunk re-anchors a note
+to the nearest surviving hunk in that file rather than dropping it when the exact line is gone, so
+add your reply at the note's original file/line as read from `comment list`. Do not skip a reply
+because the fix you are making will move or delete that line.
+
+Notes, your replies included, live only in the running Hunk window (modem-dev/hunk#113). Quitting
+Hunk loses all of them. A reload keeps them only while every noted file is still in the diff: a
+reload that drops a file carrying a note disconnects the whole session from Hunk's daemon
+(modem-dev/hunk#1138). Two everyday things do that. One is committing a noted file while Hunk
+shows only uncommitted changes (`hunk diff` with no target). The other is a fix that reverts a
+noted file to its base content. So:
+
+- Read every note once, up front, and keep that `comment list --json` output. It is your copy of
+  the notes if the session drops later.
+- Post the session reply for a note before you commit its file, and before a fix that reverts a
+  whole file.
 
 ## Keep the HTML writeup in sync
 
@@ -83,8 +95,10 @@ Close with one summary grouped by outcome, not a list of notes in file order:
 - Open for you — the debatable ones, with the specific question each raises.
 - Declined, out of scope — what was asked and why it was not done.
 
-Leave the session loaded so the user can re-read it. They reload, or run with `--watch`. If the
-HTML writeup was updated, say so and give it as a complete `file://` URL on its own line, such as
+Leave the session loaded so the user can re-read it. They press `r` in Hunk to reload once you
+are done. Do not suggest `--watch`: it reloads while you are still editing, so a noted file that
+leaves the diff takes the session down before your replies are posted. If the HTML writeup was
+updated, say so and give it as a complete `file://` URL on its own line, such as
 file:///home/alice/docs/pr-42/review-plan.html, built from the absolute path `hunk-plan render`
 printed. A `~/`-prefixed or relative path is not clickable in a terminal, and backticks can stop
 the URL from being linked too.
@@ -107,5 +121,14 @@ the URL from being linked too.
   visible to it (the broker registration lives there — no network involved), `HUNK_MCP_DISABLE=1`
   is set, or `--repo` does not match a live session. Ask the user which applies; never set
   `HUNK_MCP_UNSAFE_ALLOW_REMOTE`, which would expose session control to the local network.
+- `hunk: protocol-validation-failed` from `comment list` or `comment add`, or the session is
+  missing from `hunk session list` while the user's Hunk window still shows the notes. A reload
+  dropped a noted file from the diff and the daemon rejected the window (modem-dev/hunk#1138).
+  Nothing reconnects that window: the status line suggests `hunk daemon restart`, but the window
+  stays detached afterwards, so do not suggest it and do not retry in a loop. Finish from the
+  notes you already read: make the fixes, put every reply in the chat (and in the writeup's
+  `.notes.md` files, if there is a writeup), and tell the user the session dropped. If it
+  dropped before you read the notes, ask the user to paste them from the window. Quitting Hunk
+  to get a fresh session loses them.
 - `hunk: command not found` — Hunk is installed via mise (`aqua:modem-dev/hunk`). Say so rather
   than guessing at an install path.

@@ -218,10 +218,39 @@ as one undifferentiated queue:
 
 Every note gets a reply written back into the session at the line you left it, so the answer sits
 where you are already looking instead of only in the chat. Notes survive your own fixes moving the
-line, because Hunk re-anchors them to the nearest surviving hunk.
+line, because Hunk re-anchors them to the nearest surviving hunk. They do not survive quitting
+Hunk, and one kind of reload loses the whole session; see
+[keeping your notes](#keeping-your-notes).
 
 If a writeup already exists, each outcome is appended to that group's notes file and the page is
 re-rendered. The generated HTML is never edited in place, since the next render would overwrite it.
+
+### Keeping your notes
+
+Hunk keeps notes only in the running window
+([modem-dev/hunk#113](https://github.com/modem-dev/hunk/issues/113)). Quit it and they are gone,
+your notes and the agent's replies alike. A reload keeps them, with one exception that costs you
+the session: a reload that drops a noted file from the diff disconnects the window from Hunk's
+daemon ([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138); an open fix is
+[#1131](https://github.com/modem-dev/hunk/pull/1131)). The window looks fine and still shows your
+notes, but the agent's next `hunk session` command fails with `protocol-validation-failed`.
+
+Three habits keep you clear of it while notes are open:
+
+- **Open Hunk on the fork point.** The three-dot range above shows commits only, so the agent's
+  uncommitted fixes never appear in it. `hunk diff $(git merge-base origin/dev HEAD)` shows the
+  branch's commits *and* the uncommitted fixes, and a file stays in it after it is committed.
+  Plain `hunk diff` is the risky one: it shows only uncommitted changes, so the commit that lands
+  a fix is exactly what drops the noted file.
+- **Leave `--watch` off and press `r` yourself** once the agent says it is done. `--watch`
+  reloads in the middle of the agent's edits, before its replies are posted.
+- **Read the replies before you quit.** That window is the only copy.
+
+A fix that reverts a noted file to its base content still costs the session on any target, at the
+next reload. If the session drops, nothing reconnects that window. Hunk's status line suggests
+`hunk daemon restart`, but the window stays detached afterwards (checked on 0.23.0). Read what is
+on screen, quit, and open Hunk again. The agent keeps the notes it already read and answers in
+the chat and the writeup.
 
 ## What's in here
 
