@@ -18,6 +18,26 @@ an already-running session through `hunk session ...`, never by opening one.
 Each note is anchored to a file and line. Treat every one as a review request scoped to the
 loaded changeset — not an invitation to touch anything else.
 
+## Notes from a hand-off
+
+When `hunk-plan wait` delivered the notes (hunk-review's step 11), work from its JSON instead of
+`comment list`. It was written by the Hunk window itself, so it still holds every note after the
+session has dropped from the daemon.
+
+- `notes` holds every note in the window. Act on the ones marked `"new": true`. The others were
+  handled in an earlier round, and `"source": "agent"` notes are your own earlier replies; read
+  both as context. Reply at each note's `file` and `line`, with `--old-line` when its `side` is
+  `old`. `file` is `null` only when the note's file left the diff before Hunk reported its path.
+- `instruction`, when present, is one more request from the reviewer, scoped to the changeset
+  like a note. Answer it in the chat, since it has no line to reply on.
+- `mode` sets how far you go:
+  - `fix-clear`: the classification below, as written.
+  - `explain`: change no files. Questions get their answer, change requests get what you would
+    change and why, and judgment calls get the trade-off. Say in each reply that nothing changed.
+  - `fix-all`: also act on the judgment calls. Pick the option you would defend, make the change,
+    and say in the reply which way you went and why, so the reviewer can push back. Out-of-scope
+    notes are still declined.
+
 ## Classify each note, then act — do not treat every note as the same task
 
 - **Concrete change** ("fix this", "handle the nil case", "rename this") — make the change
@@ -46,16 +66,20 @@ add your reply at the note's original file/line as read from `comment list`. Do 
 because the fix you are making will move or delete that line.
 
 Notes, your replies included, live only in the running Hunk window (modem-dev/hunk#113). Quitting
-Hunk loses all of them. A reload keeps them only while every noted file is still in the diff: a
-reload that drops a file carrying a note disconnects the whole session from Hunk's daemon
-(modem-dev/hunk#1138). Two everyday things do that. One is committing a noted file while Hunk
-shows only uncommitted changes (`hunk diff` with no target). The other is a fix that reverts a
-noted file to its base content. So:
+Hunk loses all of them. A reload keeps them, with one exception that costs the whole session: a
+reload that drops a file carrying one of your replies (any comment added with `hunk session
+comment add`) disconnects the session from Hunk's daemon (modem-dev/hunk#1138). The user's own
+notes do not trigger it. Two everyday things drop a file: a fix that reverts it to its base
+content, and committing it while Hunk shows only uncommitted changes (`hunk diff` with no
+target). So:
 
 - Read every note once, up front, and keep that `comment list --json` output. It is your copy of
   the notes if the session drops later.
-- Post the session reply for a note before you commit its file, and before a fix that reverts a
-  whole file.
+- Never leave a reply on a file that is about to leave the diff. Before a fix that reverts a whole
+  file, remove your earlier replies on it (`comment list --type agent --file <p>`, then
+  `comment rm <id>`), and answer that file's notes in the chat instead.
+- Commit only when the user's Hunk diffs against a commit, such as the fork point. When unsure,
+  leave committing to the user.
 
 ## Keep the HTML writeup in sync
 
@@ -96,8 +120,8 @@ Close with one summary grouped by outcome, not a list of notes in file order:
 - Declined, out of scope — what was asked and why it was not done.
 
 Leave the session loaded so the user can re-read it. They press `r` in Hunk to reload once you
-are done. Do not suggest `--watch`: it reloads while you are still editing, so a noted file that
-leaves the diff takes the session down before your replies are posted. If the HTML writeup was
+are done. Do not suggest `--watch`: it reloads in the middle of your edits, so a file that leaves
+the diff while it still carries one of your replies takes the session down. If the HTML writeup was
 updated, say so and give it as a complete `file://` URL on its own line, such as
 file:///home/alice/docs/pr-42/review-plan.html, built from the absolute path `hunk-plan render`
 printed. A `~/`-prefixed or relative path is not clickable in a terminal, and backticks can stop
@@ -113,6 +137,7 @@ the URL from being linked too.
     hunk-plan path
     hunk-plan report-dir
     hunk-plan render
+    hunk-plan wait [--timeout <seconds>]
 
 ## Failure modes
 
@@ -123,7 +148,7 @@ the URL from being linked too.
   `HUNK_MCP_UNSAFE_ALLOW_REMOTE`, which would expose session control to the local network.
 - `hunk: protocol-validation-failed` from `comment list` or `comment add`, or the session is
   missing from `hunk session list` while the user's Hunk window still shows the notes. A reload
-  dropped a noted file from the diff and the daemon rejected the window (modem-dev/hunk#1138).
+  dropped a file carrying an agent reply, and the daemon rejected the window (modem-dev/hunk#1138).
   Nothing reconnects that window: the status line suggests `hunk daemon restart`, but the window
   stays detached afterwards, so do not suggest it and do not retry in a loop. Finish from the
   notes you already read: make the fixes, put every reply in the chat (and in the writeup's

@@ -192,6 +192,8 @@ A file present in the changeset but not mentioned in the plan still shows up
 | `Z` | Collapse/expand group | Toggles the collapse state of the group containing the selected file |
 | `>` | Next group | Jumps to the first file of the next group |
 | `<` | Previous group | Jumps to the first file of the previous group |
+| `S` | Send review to agent | Asks how much the agent should change (fix what's clear and ask about the rest, explain only, or fix everything) and for an optional instruction, then hands every note to a waiting `hunk-plan wait` |
+| `A` | Approve review | After a confirm, tells a waiting `hunk-plan wait` the review is approved |
 | *(unbound)* | Collapse fully reviewed groups | Reachable from the Extensions menu; collapses every group whose files are all marked viewed |
 
 Every default here is a shifted letter or a punctuation key, which is a
@@ -272,3 +274,12 @@ Viewed-file state (which files you have marked reviewed, and against which
 patch digest) lives alongside it, at
 `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.viewed.json`,
 and is pruned automatically as files drop out of the changeset.
+
+The review loop's hand-off lives in a directory next to them,
+`${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.loop/`:
+`go.json` is what `S` and `A` write and `hunk-plan wait` consumes (renaming it
+to `last.json`), and `window.json` records which Hunk process has the repo
+open, so `wait` can tell "not opened yet" from "closed". The hand-off carries
+the notes themselves, read from the Hunk process rather than through the
+session daemon, so it still works after a reload has dropped the session
+([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138)).

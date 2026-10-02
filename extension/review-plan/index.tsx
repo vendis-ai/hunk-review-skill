@@ -21,9 +21,27 @@ import type {
   ExtensionPaneTheme,
   HunkExtensionAPI,
 } from "hunkdiff/extension";
+import { existsSync } from "node:fs";
 import { useSyncExternalStore } from "react";
 import { blendHex } from "./color";
 import { buildCollapsedLayout, rawFallbackReason, type CollapsedFile } from "./collapsed";
+import {
+  buildMarker,
+  deliveredIds,
+  MODE_CHOICES,
+  markerPath,
+  modeFromLabel,
+  readHead,
+  readWindow,
+  rememberFileKeys,
+  settleSent,
+  windowClosed,
+  windowOpened,
+  windowPath,
+  writeJsonAtomic,
+  type GoMode,
+  type MarkerKind,
+} from "./go";
 import {
   anchorFileScopedAnnotations,
   filterAnnotationsInHunks,
@@ -297,6 +315,103 @@ function setSelectedFileCollapsed(ctx: ExtensionCommandContext, collapse: boolea
 }
 
 // ---------------------------------------------------------------------------
+// Review loop
+//
+// What "Send review to agent" has to remember between presses. Module-level
+// for the same reason as the store: it must survive factory re-runs. It has
+// exactly the lifetime of the notes it describes, which die with this process
+// too (modem-dev/hunk#113), so none of it is persisted.
+// ---------------------------------------------------------------------------
+
+interface LoopState {
+  /** fileKey -> path from earlier snapshots, for notes whose file has left the diff. */
+  fileKeyPaths: Map<string, string>;
+  /** note id -> path, from `note_created`. */
+  notePaths: Map<string, string>;
+  /** User notes delivered by a send the agent has already picked up. */
+  sentIds: Set<string>;
+  /** User notes in the marker written last, not yet known to be picked up. */
+  pendingIds: Set<string>;
+  /** The repo whose window.json this process wrote. */
+  windowRepo: string | null;
+}
+
+const loop: LoopState = {
+  fileKeyPaths: new Map(),
+  notePaths: new Map(),
+  sentIds: new Set(),
+  pendingIds: new Set(),
+  windowRepo: null,
+};
+
+/** Tell `hunk-plan wait` a Hunk window has this repo open. Once per repo per process. */
+function markWindowOpen(repoRoot: string): void {
+  if (loop.windowRepo === repoRoot) return;
+  if (writeJsonAtomic(windowPath(repoRoot, process.env), windowOpened(process.pid, new Date()))) {
+    loop.windowRepo = repoRoot;
+  }
+}
+
+function markWindowClosed(): void {
+  if (!loop.windowRepo) return;
+  const target = windowPath(loop.windowRepo, process.env);
+  const closed = windowClosed(readWindow(target), process.pid, new Date());
+  if (closed) writeJsonAtomic(target, closed);
+}
+
+/**
+ * Write the marker `hunk-plan wait` is polling for.
+ *
+ * Reads notes from the review store in this process, not from the session
+ * daemon, so it still works after a reload has dropped the session
+ * (modem-dev/hunk#1138).
+ */
+function deliver(ctx: ExtensionCommandContext, kind: MarkerKind, mode: GoMode | null, instruction: string | null): void {
+  const state = store.getSnapshot();
+  if (!state.repoRoot) return;
+  const snapshot = ctx.review.snapshot();
+  if (!snapshot) {
+    ctx.notify("The review reloaded before this could be sent. Press the key again.", "warning");
+    return;
+  }
+
+  const target = markerPath(state.repoRoot, process.env);
+  const replacing = existsSync(target);
+  loop.sentIds = settleSent(loop.sentIds, loop.pendingIds, replacing);
+  loop.fileKeyPaths = rememberFileKeys(loop.fileKeyPaths, snapshot);
+
+  const marker = buildMarker({
+    kind,
+    mode,
+    instruction,
+    repoRoot: state.repoRoot,
+    head: readHead(state.repoRoot),
+    now: new Date(),
+    snapshot,
+    fileKeyPaths: loop.fileKeyPaths,
+    notePaths: loop.notePaths,
+    sentIds: loop.sentIds,
+  });
+  if (!writeJsonAtomic(target, marker)) {
+    ctx.notify(`Could not write ${target}`, "error");
+    return;
+  }
+  loop.pendingIds = deliveredIds(marker);
+
+  if (kind === "approve") {
+    ctx.notify("Approved. A waiting agent stops here.");
+    return;
+  }
+  const fresh = loop.pendingIds.size;
+  const label = MODE_CHOICES.find((choice) => choice.mode === mode)?.label ?? "";
+  ctx.notify(
+    `Ready for the agent: ${fresh} new note${fresh === 1 ? "" : "s"}, ${label.toLowerCase()}${
+      marker.instruction ? ", with an instruction" : ""
+    }${replacing ? " (replaces the one it had not picked up)" : ""}`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Small string helpers for fixed-width terminal rows
 // ---------------------------------------------------------------------------
 
@@ -523,6 +638,7 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
 
   hunk.transformChangeset(async (changeset: ExtensionChangeset, ctx) => {
     const repoRoot = findRepoRoot(ctx.cwd) ?? ctx.cwd;
+    markWindowOpen(repoRoot);
     const loaded = loadPlan(repoRoot, process.env);
 
     if (loaded.error) {
@@ -720,9 +836,37 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     }
   });
 
+  hunk.registerCommand({ id: "sendToAgent", title: "Send review to agent", key: "S" }, async (ctx) => {
+    if (!store.getSnapshot().repoRoot) return;
+    const mode = modeFromLabel(
+      await ctx.dialogs.select({ title: "Send review to agent", options: MODE_CHOICES.map((choice) => choice.label) })
+    );
+    if (!mode) return;
+    const instruction = await ctx.dialogs.input({
+      title: "Instruction for the agent (optional)",
+      placeholder: "Enter to send without one",
+    });
+    if (instruction === null) return;
+    deliver(ctx, "go", mode, instruction);
+  });
+
+  hunk.registerCommand({ id: "approveReview", title: "Approve review", key: "A" }, async (ctx) => {
+    if (!store.getSnapshot().repoRoot) return;
+    const approved = await ctx.dialogs.confirm({
+      title: "Approve this review?",
+      body: "A waiting agent stops and finishes instead of waiting for more notes.",
+      confirmLabel: "approve",
+    });
+    if (approved) deliver(ctx, "approve", null, null);
+  });
+
   hunk.on("changeset_loaded", () => resyncAfterChangeset());
   hunk.on("session_reload", () => resyncAfterChangeset());
+  hunk.on("note_created", ({ note }) => {
+    loop.notePaths.set(note.id, note.filePath);
+  });
   hunk.on("shutdown", () => {
+    markWindowClosed();
     const state = store.getSnapshot();
     if (!state.repoRoot) return;
     writeViewed(viewedStatePath(state.repoRoot, process.env), state.viewed);

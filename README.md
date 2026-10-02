@@ -169,6 +169,8 @@ From [`review-plan`](extension/review-plan/README.md), which draws the grouped f
 | `X` | Collapse or expand the selected file's diff |
 | `>` | Jump to the next group |
 | `<` | Jump to the previous group |
+| `S` | Send the review back to the agent: pick how much it may change, add an optional instruction |
+| `A` | Approve the review, which ends the agent's wait |
 
 It also registers **Collapse fully reviewed groups**, which has no default key and runs from the
 Extensions menu.
@@ -225,15 +227,22 @@ Hunk, and one kind of reload loses the whole session; see
 If a writeup already exists, each outcome is appended to that group's notes file and the page is
 re-rendered. The generated HTML is never edited in place, since the next render would overwrite it.
 
+You don't have to start that by hand. `/hunk-review` ends by waiting for you (`hunk-plan wait`):
+press `S` in Hunk when your notes are in, choose how much the agent may change (fix what's clear
+and ask about the rest, explain only, or fix everything), and it works through them, re-renders
+the writeup and waits again. Press `r` to see its changes, and `A` when you're done. Without the
+extension, a note reading `GO` or `APPROVE` does the same.
+
 ### Keeping your notes
 
 Hunk keeps notes only in the running window
 ([modem-dev/hunk#113](https://github.com/modem-dev/hunk/issues/113)). Quit it and they are gone,
 your notes and the agent's replies alike. A reload keeps them, with one exception that costs you
-the session: a reload that drops a noted file from the diff disconnects the window from Hunk's
-daemon ([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138); an open fix is
-[#1131](https://github.com/modem-dev/hunk/pull/1131)). The window looks fine and still shows your
-notes, but the agent's next `hunk session` command fails with `protocol-validation-failed`.
+the session: a reload that drops a file carrying one of the agent's replies disconnects the window
+from Hunk's daemon ([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138); an open
+fix is [#1131](https://github.com/modem-dev/hunk/pull/1131)). Your own notes don't trigger it. The
+window looks fine and still shows every note, but the agent's next `hunk session` command fails
+with `protocol-validation-failed`.
 
 Three habits keep you clear of it while notes are open:
 
@@ -241,16 +250,18 @@ Three habits keep you clear of it while notes are open:
   uncommitted fixes never appear in it. `hunk diff $(git merge-base origin/dev HEAD)` shows the
   branch's commits *and* the uncommitted fixes, and a file stays in it after it is committed.
   Plain `hunk diff` is the risky one: it shows only uncommitted changes, so the commit that lands
-  a fix is exactly what drops the noted file.
+  a fix drops the file the agent just replied on.
 - **Leave `--watch` off and press `r` yourself** once the agent says it is done. `--watch`
-  reloads in the middle of the agent's edits, before its replies are posted.
+  reloads in the middle of the agent's edits, while a file it is reverting may still carry its
+  reply.
 - **Read the replies before you quit.** That window is the only copy.
 
-A fix that reverts a noted file to its base content still costs the session on any target, at the
-next reload. If the session drops, nothing reconnects that window. Hunk's status line suggests
-`hunk daemon restart`, but the window stays detached afterwards (checked on 0.23.0). Read what is
-on screen, quit, and open Hunk again. The agent keeps the notes it already read and answers in
-the chat and the writeup.
+A fix that reverts a whole file to its base content drops that file on any target. The notes
+skill removes its own replies on such a file first and answers in the chat instead, which keeps
+the session. If the session drops anyway, nothing reconnects that window. Hunk's status line
+suggests `hunk daemon restart`, but the window stays detached afterwards (checked on 0.23.0).
+Read what is on screen, quit, and open Hunk again. The agent keeps the notes it already read and
+answers in the chat and the writeup.
 
 ## What's in here
 
@@ -270,8 +281,8 @@ the chat and the writeup.
 
 Plans live outside your repos, in `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/`, keyed by
 a hash of the repo path. Each review leaves a `<digest>.json` plan, a `<digest>.report/` directory
-of the agent's prose, and the rendered `<digest>.html`, plus a shared copy of the two vendored
-libraries.
+of the agent's prose, the rendered `<digest>.html`, and a `<digest>.loop/` directory for the
+hand-off between Hunk and a waiting agent, plus a shared copy of the two vendored libraries.
 
 ```sh
 hunk-plan clear              # this repo's plan, report and rendered page

@@ -63,13 +63,18 @@ jobs:
       - name: Test suite (DOM assertions on Linux only)
         run: test/render_test.sh
 
+      - name: Review loop suite
+        run: test/wait_test.sh
+
       # macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds a
       # newer one whenever Homebrew has installed one -- so the system shell has
       # to be named explicitly or a bash-4-ism ships without anyone noticing.
       # This is not hypothetical: `hunk-plan gc` used an associative array.
-      - name: Same suite under /bin/bash
+      - name: Same suites under /bin/bash
         if: runner.os == 'macOS'
-        run: TEST_BASH=/bin/bash test/render_test.sh
+        run: |
+          TEST_BASH=/bin/bash test/render_test.sh
+          TEST_BASH=/bin/bash test/wait_test.sh
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -78,7 +83,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: |
           shellcheck --severity=warning \
-            bin/hunk-plan install.sh test/render_test.sh test/keymap_check.sh
+            bin/hunk-plan install.sh test/render_test.sh test/keymap_check.sh test/wait_test.sh
 
   keymap:
     name: keymap vs latest hunk

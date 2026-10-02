@@ -322,6 +322,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     `review-plan` extension is active, the plan alone is enough to open in Hunk. If not, pass the
     derived sidecar with `--agent-context`.
 
+    Point that command at the fork point, not at the three-dot range: `hunk diff <merge-base>`,
+    with the merge-base from step 1. The loop in step 11 makes uncommitted fixes, which only a diff
+    against the working tree shows, and a file in that diff stays in view after it is committed.
+    A reload that drops a file carrying an agent reply disconnects the session
+    (modem-dev/hunk#1138), so never suggest plain `hunk diff` or `--watch`.
+
     Give the writeup as a complete `file://` URL on its own line, such as
     file:///home/alice/docs/pr-42/review-plan.html, so the reader opens it straight from your
     reply. A `~/`-prefixed or relative path is not clickable in a terminal, and backticks can stop
@@ -334,6 +340,36 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     for the writeup — without `hunk-plan render` there is no frame to put prose in, so say the
     writeup was skipped rather than hand-rolling an HTML document.
 
+11. Wait for the reviewer. Do not end on the hand-back; stay in the loop until the review is
+    approved. Tell the user how to answer: press `S` in Hunk to send the review back (it asks
+    how much to change and for an optional instruction), or `A` to approve. Without the
+    extension, a note reading `GO` (or `GO: <instruction>`) or `APPROVE` does the same.
+
+        hunk-plan wait
+
+    It blocks for at most 8 minutes (`--timeout <seconds>` changes that) and prints the hand-off
+    as JSON. Run it the way your harness allows a long command:
+
+    - Claude Code: in the background (`run_in_background`), then end your turn. The completion
+      notification wakes you with the output and the exit code.
+    - Codex: in the foreground with `timeout_ms` above the wait, such as 500000 for the default.
+      Without it, Codex stops the command after 10 seconds.
+    - Anything else: in the foreground. If your shell tool stops commands sooner than 8
+      minutes, pass a `--timeout` below that limit.
+
+    Then act on the exit code:
+
+    - `0`, go. Handle the notes as hunk-handle-notes describes, in the hand-off's `mode` and
+      with its `instruction`; that skill's "Notes from a hand-off" section covers both. Then
+      re-render the writeup, tell the user what changed and to press `r` in Hunk, and run
+      `hunk-plan wait` again.
+    - `10`, approved. Stop waiting, say so, and finish.
+    - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to
+      ask you to wait again when they are ready.
+    - `3`, nothing to wait on: there is no plan, or Hunk was closed since the plan was written,
+      which also lost its notes. Stop and say which.
+    - Anything else is an error. Report it and stop.
+
 ## Surface
 
     hunk-plan path       [--in-repo]
@@ -344,6 +380,7 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     hunk-plan render     [--in-repo] [-o <path>]
     hunk-plan clear      [--yes]
     hunk-plan gc         [--dry-run] [--yes] [--older-than <days>]
+    hunk-plan wait       [--timeout <seconds>]
 
 ## Failure modes
 

@@ -9,6 +9,7 @@
 #   state-dir plan:  ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.json
 #   in-repo plan:    <repoRoot>/.hunk/review-plan.json
 #   viewed state:    ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.viewed.json
+#   loop hand-off:   ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.loop/ (go.ts)
 # <digest> is the first 16 hex chars of sha256(<absolute repo root path>),
 # byte-identical to plan.ts's repoDigest() -- hashed with `printf %s`, not
 # `echo`, so no trailing newline sneaks into the hashed bytes.
@@ -65,8 +66,8 @@ Commands:
                         its extension) or "url" (an external nav link, never
                         fetched) -- one or the other, never both.
   clear [--yes]         Remove this repo's plan (both possible locations) and
-                        its sibling .viewed.json, .sidecar.json, .html and
-                        .report/. Asks for confirmation unless --yes.
+                        its sibling .viewed.json, .sidecar.json, .html,
+                        .report/ and .loop/. Asks for confirmation unless --yes.
   gc [--dry-run] [--yes] [--older-than <days>]
                         Sweep the whole state directory, not just this repo:
                         artifacts with no plan file, plans whose repo no longer
@@ -74,6 +75,18 @@ Commands:
                         than <days> (default 30). Shared assets go once the
                         last report does. Asks for confirmation unless --yes.
   viewed                Print the viewed-state path.
+  wait [--timeout <seconds>]
+                        Block until the reviewer hands the review back from
+                        Hunk ("Send review to agent", S) or approves it
+                        (A), for at most <seconds> (default 480). Prints the
+                        hand-off as JSON: kind, mode, instruction and every
+                        note, the reviewer's new ones marked "new": true.
+                        Without the extension, a note typed in Hunk that reads
+                        GO (or "GO: <instruction>") or APPROVE does the same
+                        through the session daemon, and is removed once read.
+                        Exit codes: 0 go, 10 approved, 2 still waiting (run it
+                        again), 3 nothing to wait on (no plan and no Hunk
+                        window, or Hunk was closed since the plan was written).
   -h, --help            Show this help.
 
 Must be run inside a git repository; the repo root is resolved via
@@ -119,6 +132,13 @@ viewed_path_for() {
   local root="$1" d
   d=$(digest_for "$root")
   printf '%s/hunk/review-plan/%s.viewed.json' "$(state_dir)" "$d"
+}
+
+# The review loop's hand-off directory, matching go.ts's loopDir().
+loop_dir_for() {
+  local root="$1" d
+  d=$(digest_for "$root")
+  printf '%s/hunk/review-plan/%s.loop' "$(state_dir)" "$d"
 }
 
 has_flag() {
@@ -315,7 +335,7 @@ cmd_clear() {
   for target in \
     "$state_plan" "$in_repo_plan" "$viewed" \
     "$(html_path_for "$state_plan")" "$(sidecar_path_for "$state_plan")" \
-    "$(report_dir_for "$state_plan")" \
+    "$(report_dir_for "$state_plan")" "$(loop_dir_for "$root")" \
     "$(html_path_for "$in_repo_plan")" "$(report_dir_for "$in_repo_plan")"; do
     [[ -e $target ]] && existing+=("$target")
   done
@@ -333,7 +353,7 @@ cmd_clear() {
   fi
 
   for target in "${existing[@]}"; do
-    rm -rf "$target" # -r: the report directory is one of these
+    rm -rf "$target" # -r: the report and loop directories are among these
     echo "$PROG: removed $target"
   done
 }
@@ -781,6 +801,152 @@ cmd_render() {
   echo "$PROG: wrote $out"
 }
 
+# ── review loop ──────────────────────────────────────────────────────────────
+#
+# `wait` is the agent's half of the loop. The review-plan extension writes
+# <loop>/go.json when the reviewer presses "Send review to agent" or "Approve";
+# this consumes it. The file carries the notes themselves, read from the Hunk
+# process, so the loop keeps working after a reload has dropped the session
+# from the daemon (modem-dev/hunk#1138). Polling a file once a second is cheap;
+# each `wait` call is still one bounded call for the agent.
+
+WAIT_GO=0
+WAIT_APPROVED=10
+WAIT_PENDING=2
+WAIT_NOTHING=3
+SENTINEL_EVERY=15
+
+# Print a marker file and exit with the code its kind stands for.
+emit_marker() {
+  local file="$1" kind
+  kind=$(jq -r '.kind' "$file")
+  jq . "$file"
+  [[ $kind == approve ]] && exit "$WAIT_APPROVED"
+  exit "$WAIT_GO"
+}
+
+# Take go.json if it is there. The rename is the claim: with two waiters on one
+# repo only one rename succeeds, so a hand-off is delivered exactly once.
+take_marker() {
+  local loop="$1" taken
+  taken="$loop/taken.$$.json"
+  mv "$loop/go.json" "$taken" 2>/dev/null || return 1
+  if ! jq -e '.version == 1 and (.kind == "go" or .kind == "approve")' "$taken" >/dev/null 2>&1; then
+    mv -f "$taken" "$loop/invalid.json"
+    die "ignored an unreadable hand-off; it is kept at $loop/invalid.json"
+  fi
+  mv -f "$taken" "$loop/last.json"
+  emit_marker "$loop/last.json"
+}
+
+# The fallback when the extension did not load: a note typed in Hunk that reads
+# GO, "GO: <instruction>" (the colon is optional) or APPROVE. Uppercase, as its
+# own word, so "go through this again" or "GOT it" in an ordinary note never
+# fires. Read through the session daemon, so this path
+# does not survive #1138 the way the extension's does. Each sentinel fires
+# once: its id is recorded, and it is removed from the session when possible.
+take_sentinel() {
+  local root="$1" loop="$2" list seen head marker id
+  command -v hunk >/dev/null 2>&1 || return 1
+  list=$(hunk session comment list --repo "$root" --type user --json 2>/dev/null) || return 1
+  seen='[]'
+  [[ -f "$loop/sentinels" ]] && seen=$(jq -R -s 'split("\n") | map(select(length > 0))' "$loop/sentinels")
+  head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+
+  marker=$(printf '%s' "$list" | jq -e \
+    --arg root "$root" --arg head "$head" --argjson seen "$seen" \
+    --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    def text: (.body // .summary // "");
+    [.comments[]?] as $all
+    | [ $all[] | select(.noteId as $id | $seen | any(. == $id) | not)
+               | select(text | test("\\A\\s*(GO|APPROVE)(\\s*:|\\s|\\z)")) ] | first
+    | select(. != null) as $s
+    | ($s | text | capture("\\A\\s*(?<kw>GO|APPROVE)(\\s*:\\s*|\\s+|\\z)(?<rest>.*)\\z"; "p")) as $m
+    | ($m.rest | sub("\\s+\\z"; "")) as $rest
+    | {
+        version: 1,
+        kind: (if $m.kw == "GO" then "go" else "approve" end),
+        mode: (if $m.kw == "GO" then "fix-clear" else null end),
+        instruction: (if $m.kw == "GO" and ($rest | length) > 0 then $rest else null end),
+        repoRoot: $root,
+        head: (if $head == "" then null else $head end),
+        createdAt: $now,
+        sentinel: $s.noteId,
+        notes: [ $all[] | select(.noteId != $s.noteId) | {
+          id: .noteId,
+          source: (.source // "user"),
+          file: (.filePath // null),
+          side: (if .newRange then "new" elif .oldRange then "old" else null end),
+          line: ((.newRange // .oldRange // [null])[0]),
+          summary: text,
+          new: true
+        } + (if .newRange then {newRange} else {} end)
+          + (if .oldRange then {oldRange} else {} end)
+          + (if .author then {author} else {} end)
+          + (if .createdAt then {createdAt} else {} end) ]
+      }' 2>/dev/null) || return 1
+
+  id=$(printf '%s' "$marker" | jq -r '.sentinel')
+  mkdir -p "$loop"
+  printf '%s\n' "$id" >>"$loop/sentinels"
+  hunk session comment rm --repo "$root" "$id" >/dev/null 2>&1 || true
+  printf '%s\n' "$marker" >"$loop/last.json"
+  emit_marker "$loop/last.json"
+}
+
+# True when Hunk had this repo open for the current plan and has quit since,
+# cleanly (closedAt) or not (the process is gone). A window record older than
+# the plan belongs to an earlier review and says nothing about this one.
+window_closed() {
+  local window="$1" plan="$2" closed pid
+  [[ -f $window ]] || return 1
+  [[ -n $plan && $plan -nt $window ]] && return 1
+  closed=$(jq -r '.closedAt // empty' "$window" 2>/dev/null) || return 1
+  [[ -n $closed ]] && return 0
+  pid=$(jq -r '.pid // empty' "$window" 2>/dev/null) || return 1
+  [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null
+}
+
+cmd_wait() {
+  local root loop plan timeout=480 args=("$@") i start next_sentinel=0
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == "--timeout" ]]; then
+      timeout="${args[i + 1]:-}"
+      [[ $timeout =~ ^[0-9]+$ ]] || die "--timeout requires a number of seconds"
+    fi
+  done
+  command -v jq >/dev/null 2>&1 || die "jq is required to read the hand-off"
+
+  root=$(repo_root)
+  loop=$(loop_dir_for "$root")
+  plan=$(resolve_plan "$root" 2>/dev/null) || plan=""
+
+  if [[ -z $plan && ! -f "$loop/window.json" && ! -f "$loop/go.json" ]]; then
+    echo "$PROG: nothing to wait on: no review plan for $root, and Hunk has not opened it" >&2
+    exit "$WAIT_NOTHING"
+  fi
+
+  start=$SECONDS
+  while :; do
+    # Both take_* functions exit the script when they deliver something, and
+    # return 1 when there was nothing to take -- which `set -e` must not see.
+    if [[ -f "$loop/go.json" ]]; then take_marker "$loop" || true; fi
+    if ((SECONDS >= next_sentinel)); then
+      take_sentinel "$root" "$loop" || true
+      next_sentinel=$((SECONDS + SENTINEL_EVERY))
+    fi
+    if window_closed "$loop/window.json" "$plan"; then
+      echo "$PROG: nothing to wait on: Hunk was closed without sending the review back" >&2
+      exit "$WAIT_NOTHING"
+    fi
+    if ((SECONDS - start >= timeout)); then
+      echo "$PROG: still waiting after ${timeout}s; run 'hunk-plan wait' again" >&2
+      exit "$WAIT_PENDING"
+    fi
+    sleep 1
+  done
+}
+
 # ── garbage collection ───────────────────────────────────────────────────────
 
 # Remove every artifact belonging to one digest.
@@ -790,9 +956,10 @@ gc_remove_family() {
     [[ -e $target ]] || continue
     if [[ $dry == 1 ]]; then echo "  would remove $target"; else rm -f "$target"; fi
   done
-  if [[ -d "$base.report" ]]; then
-    if [[ $dry == 1 ]]; then echo "  would remove $base.report/"; else rm -rf "$base.report"; fi
-  fi
+  for target in "$base.report" "$base.loop"; do
+    [[ -d $target ]] || continue
+    if [[ $dry == 1 ]]; then echo "  would remove $target/"; else rm -rf "$target"; fi
+  done
 }
 
 cmd_gc() {
@@ -817,12 +984,13 @@ cmd_gc() {
   local f base digest root
 
   # Pass 1: any artifact whose digest has no plan is dead by definition.
-  for f in "$sdir"/*.viewed.json "$sdir"/*.html "$sdir"/*.sidecar.json "$sdir"/*.report; do
+  for f in "$sdir"/*.viewed.json "$sdir"/*.html "$sdir"/*.sidecar.json "$sdir"/*.report "$sdir"/*.loop; do
     [[ -e $f ]] || continue
     base="${f%.viewed.json}"
     base="${base%.sidecar.json}"
     base="${base%.html}"
     base="${base%.report}"
+    base="${base%.loop}"
     [[ -f "$base.json" ]] && continue
     doomed+=("$base")
     reasons+=("orphan: no plan file")
@@ -924,6 +1092,7 @@ main() {
     gc) cmd_gc "$@" ;;
     clear) cmd_clear "$@" ;;
     viewed) cmd_viewed "$@" ;;
+    wait) cmd_wait "$@" ;;
     -h | --help) usage ;;
     "")
       usage >&2

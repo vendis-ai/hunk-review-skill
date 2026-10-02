@@ -258,7 +258,7 @@ export function repoDigest(repoRoot: string): string {
   return createHash("sha256").update(path.resolve(repoRoot)).digest("hex").slice(0, 16);
 }
 
-function stateDir(env: NodeJS.ProcessEnv): string {
+export function stateDir(env: NodeJS.ProcessEnv): string {
   const override = env.XDG_STATE_HOME;
   if (override && override.trim() !== "") return override;
   return path.join(os.homedir(), ".local", "state");
