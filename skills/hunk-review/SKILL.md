@@ -23,8 +23,10 @@ The `review-plan` extension renders the result as grouped, ordered, annotated re
 `hunk-plan sidecar` converts it to hunk's native `--agent-context` format for when extensions are
 off. Alongside the plan, this produces a second artifact: a per-topic HTML writeup (see step 9).
 
-1. Establish what the changeset actually is. Never trust the file count alone. Run these and
-   report the numbers to the user before doing anything else:
+1. Establish what the changeset actually is. Never trust the file count alone. Resolve the base
+   ref first — the PR's base branch, or the integration branch this branch forked from, which is
+   not `main` in every repository — and use it wherever this skill says `origin/main`. Then run
+   these and report the numbers to the user before doing anything else:
 
        git rev-list --count origin/main..HEAD
        git merge-base origin/main HEAD
