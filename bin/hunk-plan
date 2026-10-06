@@ -50,9 +50,9 @@ Commands:
                         Print the report directory (<plan>.report/) that holds
                         the agent-authored body content for `render`. With
                         --init, create it and scaffold an empty meta.json,
-                        _tldr.md, and a <group-slug>.why.md, .example.md and
-                        .md per group in the plan -- so nothing has to derive
-                        a slug by hand.
+                        _overview.md, _tldr.md and _glossary.md, and a
+                        <group-slug>.why.md, .example.md and .md per group in
+                        the plan -- so nothing has to derive a slug by hand.
                         Existing files are never overwritten.
   render [--in-repo] [-o <path>]
                         Render the plan plus its report directory into a
@@ -60,7 +60,9 @@ Commands:
                         copy the marked/mermaid assets alongside it. The frame,
                         nav, table of contents, section ids, verdict badges and
                         link rules are all derived here; only the body prose
-                        comes from the report directory.
+                        comes from the report directory. Sentences over 25
+                        words and an oversized glossary are reported on
+                        stderr; they never stop the render.
                         A meta.json "docs" entry takes either "path" (repo-
                         relative, absolute or ~-prefixed; converted according to
                         its extension) or "url" (an external nav link, never
@@ -538,7 +540,12 @@ cmd_report_dir() {
 }
 META
     fi
+    # The page's front matter, in the order it renders: the overview for
+    # whoever decides whether the branch matters, the TL;DR for whoever
+    # reviews it, and the glossary for both.
+    [[ -f "$dir/_overview.md" ]] || : >"$dir/_overview.md"
     [[ -f "$dir/_tldr.md" ]] || : >"$dir/_tldr.md"
+    [[ -f "$dir/_glossary.md" ]] || : >"$dir/_glossary.md"
     while IFS=$'\t' read -r slug _ _ _ _; do
       [[ -n $slug ]] || continue
       # One file per part of a group section, in the order they render: the
@@ -663,11 +670,35 @@ cmd_render() {
     printf '  <h1>%s</h1>\n' "$(esc "$title")"
     [[ -n $subtitle ]] && printf '  <p class="subtitle">%s</p>\n' "$(esc "$subtitle")"
 
-    if [[ -s "$dir/_tldr.md" ]]; then
-      printf '  <div class="tldr"><h3>TL;DR</h3><div class="md">'
-      printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_tldr.md")"
-      printf '</div></div>\n'
+    if [[ -s "$dir/_overview.md" || -s "$dir/_tldr.md" || -s "$dir/_glossary.md" ]]; then
+      printf '  <div class="front">\n'
+      if [[ -s "$dir/_overview.md" ]]; then
+        printf '  <div class="overview"><h3>Overview</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_overview.md")"
+        printf '</div></div>\n'
+      fi
+      if [[ -s "$dir/_tldr.md" ]]; then
+        printf '  <div class="tldr"><h3>TL;DR</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_tldr.md")"
+        printf '</div></div>\n'
+      fi
+      # Closed by default: a reader looks a term up, nobody reads the list.
+      if [[ -s "$dir/_glossary.md" ]]; then
+        local nterms label="Glossary"
+        nterms=$(grep -c '^[[:space:]]*[-*+][[:space:]]' "$dir/_glossary.md" || true)
+        if [[ $nterms == 1 ]]; then
+          label="Glossary (1 term)"
+        elif [[ $nterms -gt 1 ]]; then
+          label="Glossary ($nterms terms)"
+        fi
+        printf '  <details class="glossary"><summary>%s</summary><div class="md">' "$label"
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_glossary.md")"
+        printf '</div></details>\n'
+      fi
+      printf '  </div>\n'
     fi
+    [[ -s "$dir/_overview.md" ]] ||
+      echo "$PROG: no overview (expected $dir/_overview.md)" >&2
 
     printf '  <nav class="toc"><h3>Sections</h3><ol>\n'
     for ((i = 0; i < ${#g_slug[@]}; i++)); do
@@ -798,7 +829,110 @@ cmd_render() {
   done
 
   manifest_record "$root"
+  prose_warnings "$dir"
   echo "$PROG: wrote $out"
+}
+
+# ── readability check ────────────────────────────────────────────────────────
+#
+# Warnings only: a long sentence is a rewrite to make, never a reason to
+# withhold the page. The sentence limit is ASD-STE100's for descriptive text;
+# the glossary limits are the skill's own, with a little slack. Code fences,
+# Mermaid blocks, headings and table rows are not prose, and an inline code
+# span counts as one word however many spaces it holds. Both programs avoid
+# GNU-only awk, because macOS runs this under BSD awk.
+
+SENTENCE_MAX_WORDS=25
+GLOSSARY_MAX_TERMS=12
+GLOSSARY_MAX_WORDS=15
+
+# An inline code span is one word: its inner spaces become \037 until the
+# text is printed back, so the warning quotes the sentence as written.
+CODEWORD_AWK='
+function codeword(s,   out, seg) {
+  out = ""
+  while (match(s, /`[^`]*`/)) {
+    seg = substr(s, RSTART, RLENGTH)
+    gsub(/[ \t]/, "\037", seg)
+    out = out substr(s, 1, RSTART - 1) seg
+    s = substr(s, RSTART + RLENGTH)
+  }
+  return out s
+}
+function shown(s) { gsub("\037", " ", s); return s }
+'
+
+PROSE_AWK='
+function flush(   n, parts, i, w, nw, j, cnt, head) {
+  if (block == "") return
+  n = split(block, parts, /[.!?]["*)]*[ \t]+/)
+  for (i = 1; i <= n; i++) {
+    nw = split(parts[i], w, /[ \t]+/)
+    cnt = 0; head = ""
+    for (j = 1; j <= nw; j++) {
+      if (w[j] == "") continue
+      cnt++
+      if (cnt <= 8) head = head (head == "" ? "" : " ") w[j]
+    }
+    if (cnt > max) printf "%s: long sentence (%d words) in %s: \"%s ...\"\n", prog, cnt, name, shown(head)
+  }
+  block = ""
+}
+/^[ \t]*(```|~~~)/ { flush(); fence = !fence; next }
+fence { next }
+/<pre[ >]/ { flush(); pre = 1 }
+pre { if ($0 ~ /<\/pre>/) pre = 0; next }
+/^[ \t]*\|/ { flush(); next }
+/^[ \t]*#/ { flush(); next }
+/^[ \t]*$/ { flush(); next }
+{
+  line = $0
+  gsub(/<span class="ref">[^<]*<\/span>/, "", line)
+  gsub(/<[^>]*>/, " ", line)
+  line = codeword(line)
+  gsub(/\]\([^)]*\)/, "]", line)
+  if (line ~ /^[ \t]*([-*+]|[0-9]+\.)[ \t]/) {
+    flush()
+    sub(/^[ \t]*([-*+]|[0-9]+\.)[ \t]+/, "", line)
+  }
+  block = block " " line
+}
+END { flush() }
+'
+
+GLOSSARY_AWK='
+/^[ \t]*[-*+][ \t]/ {
+  terms++
+  line = $0
+  sub(/^[ \t]*[-*+][ \t]+/, "", line)
+  line = codeword(line)
+  term = line; def = ""
+  if (index(line, ":") > 0) {
+    term = substr(line, 1, index(line, ":") - 1)
+    def = substr(line, index(line, ":") + 1)
+  }
+  gsub(/\*/, "", term); gsub(/\*/, "", def)
+  nw = split(def, w, /[ \t]+/); cnt = 0
+  for (j = 1; j <= nw; j++) if (w[j] != "") cnt++
+  if (cnt > max_words) printf "%s: long glossary entry (%d words) for \"%s\"\n", prog, cnt, shown(term)
+}
+END {
+  if (terms > max_terms) printf "%s: glossary has %d terms; keep it to %d\n", prog, terms, max_terms
+}
+'
+
+prose_warnings() {
+  local dir="$1" f
+  for f in "$dir"/*.md; do
+    [[ -s $f ]] || continue
+    if [[ $(basename "$f") == _glossary.md ]]; then
+      awk -v prog="$PROG" -v max_terms="$GLOSSARY_MAX_TERMS" \
+        -v max_words="$GLOSSARY_MAX_WORDS" "$CODEWORD_AWK$GLOSSARY_AWK" "$f" >&2
+    else
+      awk -v prog="$PROG" -v max="$SENTENCE_MAX_WORDS" -v name="$(basename "$f")" \
+        "$CODEWORD_AWK$PROSE_AWK" "$f" >&2
+    fi
+  done
 }
 
 # ── review loop ──────────────────────────────────────────────────────────────

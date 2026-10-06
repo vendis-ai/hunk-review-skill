@@ -75,10 +75,19 @@ article.doc .md h4, article.doc .md h5, article.doc .md h6 { scroll-margin-top: 
 @media (prefers-reduced-motion: reduce) { .anchor-flash { animation: none; } }
 
 /* ── review pane ──────────────────────────────────────────────────────────── */
-.tldr { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.75rem; }
-.tldr h3 { margin-top: 0; }
-.tldr ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
-.tldr li { margin: 0.35rem 0; }
+/* Front matter: the overview (what and why), the TL;DR (where to look) and the
+   glossary. The gap lives on the wrapper, so any of the three can be absent. */
+.front { display: flex; flex-direction: column; gap: 0.9rem; margin-bottom: 1.75rem; }
+.overview, .tldr { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; }
+.overview { border-left: 3px solid var(--accent); }
+.overview h3, .tldr h3 { margin-top: 0; }
+.overview ul, .tldr ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.overview li, .tldr li { margin: 0.35rem 0; }
+details.glossary { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1.25rem; }
+details.glossary > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+details.glossary > summary:hover { color: var(--text); }
+details.glossary .md ul { margin: 0.5rem 0 0.2rem; padding-left: 1.2rem; }
+details.glossary .md li { margin: 0.25rem 0; }
 nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 2rem; }
 nav.toc ol { margin: 0.5rem 0 0; padding-left: 1.3rem; }
 nav.toc li { margin: 0.5rem 0; }

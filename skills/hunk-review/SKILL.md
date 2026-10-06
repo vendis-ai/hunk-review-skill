@@ -158,11 +158,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
    Every group also gets a one-sentence `summary` — required, not optional. It says what the
    topic *is*, in plain terms a reader can act on before opening the section: not the risk (the
-   badge covers that) and not the whole branch (the TL;DR covers that). "Attachment ids move from
-   a loose draft list to a reserved sibling list across the async transcription boundary" is a
-   summary; "risky ordering change" is not — that's a verdict wearing a summary's clothes. The
-   HTML table of contents (step 9) renders it under the group title, so it is often the only thing
-   a reviewer reads before deciding whether to open the section at all.
+   badge covers that) and not the whole branch (the overview covers that). Keep it to one topic
+   and 20 words or fewer, under the writing rules in step 9. "Attachment ids now wait in a
+   reserved list while a voice note transcribes" is a summary; "risky ordering change" is not —
+   that's a verdict wearing a summary's clothes. The HTML table of contents (step 9) renders it
+   under the group title, so it is often the only thing a reviewer reads before deciding whether
+   to open the section at all.
 
    **Group titles must be short noun phrases — two or three words, no dash or clause.** `hunk-plan
    sidecar` folds the group title into every file's summary as `"<title> — <note>"`, because
@@ -180,7 +181,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    and `}` becomes "next thing worth my attention." A good ratio on a large branch is single-digit
    annotations across thousands of hunks. An annotation earns its place only if it names a
    decision, a trade-off, a risk, or a thing that is easy to get wrong — never "this adds a
-   method."
+   method." Its `summary` is one sentence of 15 words or fewer, and its `rationale` follows the
+   writing rules in step 9: the reader sees both in a narrow pane, next to the code.
 
    Ranges are safe on NEW files, which are one contiguous hunk. On MODIFIED files a range that
    falls outside a real hunk is dropped silently — verify it against the patch's `@@` headers, or
@@ -225,41 +227,109 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    switching between this and other work all day. Paragraphs of narrative are the failure mode
    this step used to produce — don't.
 
-   A group section is read by someone who has opened no code yet, so it is written in the order
-   they need it: what the issue is and what fixes it, then one concrete instance of it, then the
-   reasoning. That is three files per group, and the renderer emits them in that order whichever
-   order you write them in.
+   The page opens with three short blocks: an overview, a TL;DR and a glossary. Then come the
+   group sections. A group section is read by someone who has opened no code yet, so it is
+   written in the order they need it: what the issue is and what fixes it, then one concrete
+   instance of it, then the reasoning. That is three files per group, and the renderer emits them
+   in that order whichever order you write them in.
 
-   Assume a capable developer who has never worked in this code, and who arrived from a different
-   topic two minutes ago. Every section stands on its own: the first time a class, table or job
-   appears, say in half a line what it actually is — `InviteMinter` (the service that turns an
-   accepted invite into a membership row) — and never refer back to "the previous group". If a
-   sentence only parses for someone who has already read the diff, it isn't written yet. That is
-   a gloss, not a tutorial: one clause, then carry on.
+   The page has two readers, and each part is written for one of them:
 
-   - `_tldr.md` — exactly 3 bullets: what the branch does, the single biggest risk, the one
-     thing to check first. The only prose-adjacent text above the fold.
-   - `<group-slug>.why.md` — **required, 3-5 sentences of plain prose.** Start from what this
-     code does at all, not from what changed in it, then say what was wrong or missing and what
-     this change does about it. Write it for someone who has read nothing but the group title:
-     name the thing, say why it had to change, say what solves it. No bullets, no ref tags, no
-     verdict — the badge covers that. It is not the group's one-line `summary` reworded: the
-     summary says what the topic *is*, the why says what the *problem* was. "Signup accepted any
-     email domain, so a partner could invite themselves in. The allowlist gate now runs before
-     the invite is minted rather than after" is a why; "this hardens signup" is not.
+   - **The overview is for a CTO.** They want to know what the branch is for and how big it is.
+     They read no code, so the overview names parts of the system (signup, the billing job, the
+     chat screen), never classes or methods.
+   - **Everything else is for a junior developer.** They know the language and the framework,
+     but not this codebase or its domain, and they arrived from a different topic two minutes
+     ago. Every section stands on its own: never refer back to "the previous group". The first
+     time a class, table or job appears, say what it is. Use a gloss of five words or fewer, such
+     as `InviteMinter` (creates memberships from invites), or a short sentence of its own. If a
+     sentence only parses for someone who has already read the diff, it isn't written yet.
+
+   **Writing rules.** They apply to every file below, to group summaries (step 6) and to
+   annotations (step 7). They follow ASD-STE100, the controlled English used for technical
+   manuals, and the W3C's cognitive-accessibility guidance (COGA).
+
+   - One fact per sentence. Aim for 20 words or fewer, and never go past 25. Split a long
+     sentence where it says "so", "which", "while", or where it has a semicolon or a dash.
+   - Keep the small words: subject, verb, article. A dropped word saves the writer a second and
+     costs the reader a second pass.
+   - Say what happens, then name the code that does it. Name two code identifiers per sentence
+     at most; anything in backticks counts, whether a class, a method, a path or a key.
+   - Put the effect before the mechanism: first what the user or the data sees, then why.
+   - Put the condition first: "If the lock is held, the job stops."
+   - Use active voice and present tense, and name who acts.
+   - Do not nest clauses. A gloss in parentheses is five words at most. A longer explanation
+     gets its own sentence or goes into the glossary.
+   - Do not use `=`, `->` or `→` in running text. Arrows belong in an example's code fence only.
+   - Use three nouns in a row at most: "the save of the user's message", not "user-message
+     write".
+   - Use one name for one thing on the whole page. Do not switch between "re-read", "strong
+     read" and "fresh read" for the same call. Only the overview may use a plainer name, where
+     the code's term would mean nothing to its reader.
+   - Prefer plain verbs to team shorthand: "send again", not "re-dispatch". When the code's own
+     term is the right word, keep it and put it in the glossary.
+   - Start each bullet with what it is about, in its first three or four words.
+
+   The files:
+
+   - `_overview.md` — **for the CTO: 3 or 4 bullets, each led by a bold label.** No code
+     identifiers. Issue references such as #123 are fine.
+     - `**Goal:**` the problem for users or the business. Say why it is fixed now only when a
+       commit, issue or doc says so; never guess a reason.
+     - `**Change:**` what the branch does, in parts of the system.
+     - `**Scope:**` how big it is, what it touches, and what it leaves alone.
+     - `**Decision needed:**` only when the branch needs a call from a lead, not only a review.
+
+     "**Goal:** Partners could invite themselves into a customer's workspace. This closes that
+     gap before the beta opens (#412)." is a goal. "**Goal:** Hardens `InviteMinter` against an
+     allowlist bypass." is not: it names a mechanism, and only someone who read the code can
+     follow it.
+   - `_tldr.md` — **for the reviewer: exactly 2 bullets.** `**Biggest risk:**` the one thing
+     most likely to break, and where. `**Check first:**` the file or hunk to open first, with its
+     group and ref tag. What the branch does belongs in the overview, not here.
+   - `_glossary.md` — **the terms on this page that a newcomer to this repo would not know.** One
+     bullet per term, `- **Term**: meaning.`, in alphabetical order. At most 12 terms, and each
+     meaning 12 words or fewer, with no examples and no history. A rule the repo attaches to a
+     term ("must never be recreated") goes into the bullets of the group it affects. Include
+     domain words, internal names the prose relies on, and team shorthand ("claim", "strong
+     read"). Leave out what any developer in this stack knows. If the repo keeps a glossary (`CONTEXT.md`, `GLOSSARY.md`, a
+     glossary under `docs/`), take each meaning and spelling from it; never copy its entries
+     whole. The renderer shows the glossary closed, under the TL;DR, so a skimming reader does not
+     pay for it. Leave the file empty when the page needs no glossary.
+   - `<group-slug>.why.md` — **required: three short paragraphs with bold labels, one to three
+     sentences each, separated by blank lines.** Start from what the code does at all, not from
+     what changed in it. When a group bundles several small fixes, the problem names what they
+     share and gives one instance; the bullets carry the rest. No bullets, no ref tags, no verdict — the badge covers that. It is not
+     the group's one-line `summary` reworded: the summary says what the topic *is*, the why says
+     what the *problem* was. This is a why:
+
+         **What it is:** Signup creates an account from an invite link.
+
+         **Problem:** Signup accepted any email domain. A partner could invite themselves in.
+
+         **Fix:** The allowlist check now runs before the invite is created, not after.
+
+     "This hardens signup." is not: it names no problem and no fix.
    - `<group-slug>.example.md` — **one concrete instance, 2-8 lines.** Required on every
      `Critical` and `Review` group. Skip it on a `Skim` group where you would have to invent one
-     — an unearned example is the same verbosity as an unearned diagram. Use whichever form the
-     topic actually has: a user story, a record before and after, a two-line request/response, a
-     short table of input to outcome. Take identifiers, paths and values from the diff; an
-     invented example that contradicts the code is worse than none. Keep the fence short — this
-     is the instance that makes the bullets land, not a transcript.
-   - `<group-slug>.md` — the reasoning: **3-6 short bullets**, not sentences. The fact, the
-     risk, or the check, nothing narrating around it. Caveman register is fine: "Claim before
-     read = retry eats valid data" beats "The reordering here matters because it changes what
-     happens on retry." A bullet may carry a three-to-six-word gloss in parentheses rather than
-     assume the term — it is still a bullet. Do not repeat the group's title, its summary, or
-     its why — the renderer already emits all three above these bullets.
+     — an unearned example is the same verbosity as an unearned diagram.
+     - Open with one plain sentence, outside any fence, that says who does what: "A user records
+       a voice note, then types in the same chat while it transcribes."
+     - Show what the user or the data sees, not the internal calls in between.
+     - Two or more cases make a table: `Input | Before | After`. One case over time makes a short
+       `text` fence, with lines labelled `before:` and `after:`. When the outcome depends on a
+       condition, put it in the label: `after, on a second conflict:`.
+     - Take identifiers, paths and values from the diff. An invented example that contradicts the
+       code is worse than none. An internal name in the example is one the glossary or the why
+       already explained.
+     - If the example does not make its point on its own, end with one line: `What to notice: …`.
+   - `<group-slug>.md` — the reasoning: **3-6 bullets, one fact each.** A group that bundles
+     several small fixes may give each fix its own bullet, up to 8. A bullet is one short
+     sentence, two at most: the fact, the risk, or the check, nothing narrating around it. "The
+     job claims the row before it reads it. A retry then deletes valid data." is a bullet. "Claim
+     before read = retry eats valid data" is shorter, but the reader has to rebuild the sentence
+     before they can use it. Do not repeat the group's title, its summary, or its why — the
+     renderer already emits all three above these bullets.
    - `meta.json` — `title`, `subtitle` (the branch/base and the counts), and `docs` (step 3).
 
    Inside any of these files, Markdown with inline HTML passthrough:
@@ -287,10 +357,11 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      works too, and a `#123` inside a code fence is deliberately left alone. Do not hand-write a
      GitHub URL; a wrong guess is worse than no link.
    - **External links** need no `target` — every `http(s)` link opens in a new tab by rule.
-   - **One `<details><summary>Trade-offs</summary>…</details>`** per group, in the reasoning
-     file, for what doesn't fit a bullet — a trade-off, the history behind a fix. Closed by
-     default; there on demand, not blocking the skim. Don't label it "why": that word already
-     names the block above the example, and two of them in one section reads as a mistake.
+   - **At most one `<details><summary>Trade-offs</summary>…</details>`** per group, in the
+     reasoning file, for a trade-off or the history behind a fix. Never move a fact there only to
+     stay under the bullet count. Closed by default; there on demand, not blocking the skim.
+     Don't label it "why": that word already names the block above the example, and two of them
+     in one section reads as a mistake.
    - **A Mermaid diagram** only when the group's substance is a sequence, a state machine, or a
      race — the shape bullets are worst at. Skip it for a group that's just a file list or a
      one-shot change; an unearned diagram is still verbosity. `sequenceDiagram` for
@@ -304,9 +375,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    `importance` right in step 6 rather than trying to influence the badge here.
 
    A group whose reasoning file you leave empty renders with a visible "no writeup" marker and a
-   warning on stderr; an empty `.why.md` warns on stderr alone, so read that output rather than
-   waiting for the page to look wrong. Both are bugs, not ways to skip a group: use `importance`
-   to sink it instead.
+   warning on stderr; an empty `.why.md` or `_overview.md` warns on stderr alone, so read that
+   output rather than waiting for the page to look wrong. Both are bugs, not ways to skip a group:
+   use `importance` to sink it instead.
+
+   Before you render, reread every file once as the junior developer would. Split any sentence
+   over 20 words. Replace any word they would have to look up, or add it to the glossary.
 
    Then render:
 
@@ -316,6 +390,11 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    and prints the path. Keep it a local file: it is a review of unmerged code, and it loads
    those assets by relative path, so publishing it anywhere would both leak the diff and break
    every diagram on the page.
+
+   It also checks the prose, and reports on stderr every sentence over 25 words, a glossary over
+   12 terms, and a glossary meaning over 15 words. Rewrite each one it names and render again.
+   The warnings never stop the page from being written, so a written page is not yet a clean
+   one.
 
 10. Hand it back. Tell the user the counts — total files, files listed, annotations — and the
     single command to open the plan, plus the writeup from step 9 as a clickable link. If the

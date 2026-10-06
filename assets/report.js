@@ -433,7 +433,7 @@
   // the top of the viewport and how far above it sat, then recompute the offset
   // against the live layout on the way back. Absolute y survives only as a
   // fallback for a pane with no addressable block.
-  var ANCHOR_SEL = 'section.group, .tldr, nav.toc, .md > *, article.doc > *';
+  var ANCHOR_SEL = 'section.group, .overview, .tldr, details.glossary, nav.toc, .md > *, article.doc > *';
   var scrollMemory = {};
   var currentKey = 'review';
   var expectedY = null;

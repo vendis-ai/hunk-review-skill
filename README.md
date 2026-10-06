@@ -104,11 +104,18 @@ It reports the changeset size, groups the files by topic, orders the groups by w
 likely to get wrong, annotates only the hunks that carry a decision, and hands you back two things:
 a command to open the plan in Hunk, and a path to the HTML writeup.
 
-The writeup is a self-contained local file, and every group reads in the order a reviewer needs
-it: what the issue is and what solves it, one concrete example, then the bullets. Around that, a
-verdict badge per group, a collapsed block for the trade-offs, a Mermaid diagram where the
-substance is a sequence or a race, and a table of contents. `Skim`-tier groups start collapsed,
-so the page opens showing only what needs a decision.
+The writeup is a self-contained local file. It opens with an overview of what the branch does
+and why, written so a CTO could read it without the code. A TL;DR for the reviewer follows: the
+biggest risk and where to look first. Below that sits a glossary of the page's terms, closed until
+you need it. Every group then reads in the order a reviewer needs it: what the issue is and what
+solves it, one concrete example, then the bullets. Around that, a verdict badge per group, a
+collapsed block for the trade-offs, a Mermaid diagram where the substance is a sequence or a race,
+and a table of contents. `Skim`-tier groups start collapsed, so the page opens showing only what
+needs a decision.
+
+The prose follows short-sentence rules taken from ASD-STE100: one fact per sentence, the small
+words kept, the effect before the mechanism. `hunk-plan render` names every sentence over 25
+words on stderr, so the agent rewrites them before you read the page.
 
 Any ADR, RFC or runbook the branch leans on becomes **its own page inside that same file**,
 converted from its copy on disk and reachable from a nav bar across the top. GitHub `#123`

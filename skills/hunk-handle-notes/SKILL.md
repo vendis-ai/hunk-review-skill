@@ -59,6 +59,12 @@ Every note gets a reply in both places — chat and the session, never chat alon
   in the chat summary.
 - Out of scope — why it was declined.
 
+Write each reply for someone who switched topics a minute ago and reads it in a narrow pane.
+Give the answer first, then the reason. Use one fact per sentence, 20 words or fewer, and keep
+the subject, verb and article. Say what happens, then name the code that does it. These are the
+writing rules from hunk-review's writeup; the chat summary and the `.notes.md` lines below follow
+them too.
+
 This makes the response visible where the user is already looking. It also survives the
 commented line itself being edited or removed by your own fix: on a reload Hunk re-anchors a note
 to the nearest surviving hunk in that file rather than dropping it when the exact line is gone, so
@@ -100,9 +106,9 @@ body files already sitting in that directory show you the exact spelling.
 Each line is: file:line, what happened (Fixed / Explained / Open question — needs your input /
 Declined, out of scope), one sentence. Markdown, same as the group bodies:
 
-    - `app/models/order.rb:88` — **Fixed.** Nil guard added before the reserve call.
-    - `app/jobs/sync_job.rb:12` — **Open question — needs your input.** Retry budget is shared
-      with the importer; changing it here changes it there.
+    - `app/models/order.rb:88` — **Fixed.** The reserve call now checks for nil first.
+    - `app/jobs/sync_job.rb:12` — **Open question — needs your input.** The importer shares this
+      retry budget. A change here also changes the importer.
 
 These files are yours alone. The `.notes.md` sidecar is separate from the group's `.md` body
 precisely so you never rewrite hunk-review's prose, and so handling a second round of notes

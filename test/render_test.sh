@@ -153,6 +153,8 @@ DIR=$(run_plan report-dir --init 2>/dev/null)
 
 [[ -f "$DIR/meta.json" ]] && ok "scaffolds meta.json" || no "scaffolds meta.json"
 [[ -f "$DIR/_tldr.md" ]] && ok "scaffolds _tldr.md" || no "scaffolds _tldr.md"
+[[ -f "$DIR/_overview.md" ]] && ok "scaffolds _overview.md" || no "scaffolds _overview.md"
+[[ -f "$DIR/_glossary.md" ]] && ok "scaffolds _glossary.md" || no "scaffolds _glossary.md"
 # Slug rule: lowercase, runs of non-alphanumerics collapse to one hyphen.
 [[ -f "$DIR/security-boundary.md" ]] && ok "slugifies a plain title" || no "slugifies a plain title"
 [[ -f "$DIR/removal-inputs.md" ]] &&
@@ -184,7 +186,10 @@ cat >"$DIR/meta.json" <<JSON
     { "id": "Gone RFC", "path": "docs/rfc/absent.md", "citedBy": "removal-inputs" }
   ] }
 JSON
+printf -- '- **Goal:** Partners can no longer invite themselves in.\n' >"$DIR/_overview.md"
 printf -- '- One line of TL;DR, closes #12.\n' >"$DIR/_tldr.md"
+printf -- '- **Gate**: the check that runs before an invite exists.\n- **Invite**: a link that adds one user to one tenant.\n' \
+  >"$DIR/_glossary.md"
 printf -- '- Body for the security group.\n' >"$DIR/security-boundary.md"
 printf -- '- Tooling churn only.\n' >"$DIR/dev-tooling.md"
 : >"$DIR/removal-inputs.md" # deliberately empty: exercises the no-writeup path
@@ -206,6 +211,16 @@ assert_in 'badge skim">Skim' "$OUT" "importance 9 -> Skim"
 ORDER=$(grep -o 'id="group-[a-z-]*"' "$OUT" | tr '\n' ' ')
 assert_eq "$ORDER" 'id="group-security-boundary" id="group-removal-inputs" id="group-dev-tooling" ' \
   "orders groups by importance"
+
+# Front matter, in reading order: what and why, where to look, then the terms.
+# The glossary is looked up, not read, so it starts closed and says its size.
+assert_in '<div class="overview"><h3>Overview</h3>' "$OUT" "renders the overview"
+assert_in '<details class="glossary"><summary>Glossary (2 terms)</summary>' "$OUT" \
+  "renders the glossary closed, with its term count"
+assert_eq "$(grep -o 'class="overview"\|class="tldr"\|class="glossary"\|class="toc"' "$OUT" | tr '\n' ' ')" \
+  'class="overview" class="tldr" class="glossary" class="toc" ' \
+  "overview, TL;DR and glossary render above the contents, in that order"
+assert_not_in 'no overview' "$TMP/render.err" "no overview warning when there is one"
 
 assert_in 'No writeup was written' "$OUT" "flags a group with no body"
 assert_in 'no body for group' "$TMP/render.err" "warns on stderr about a missing body"
@@ -270,6 +285,38 @@ printf '{"title":"x","docs":[{"id":"Scheme","url":"javascript:alert(1)"}]}\n' >"
 run_plan render -o "$TMP/bad.html" >/dev/null 2>"$TMP/bad3.err" &&
   no "render rejects a non-http url" || ok "render rejects a non-http url"
 cp "$TMP/meta.good.json" "$DIR/meta.json"
+
+echo
+echo "hunk-plan render: readability warnings"
+
+# Each file is put back afterwards, so nothing below sees these.
+for f in _overview.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$DIR/$f" "$TMP/keep.$f"; done
+: >"$DIR/_overview.md"
+LONG='This sentence is written on purpose to run well past the limit that the renderer allows, so that the readability check has something real to warn about here today.'
+SPAN='`one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two`'
+{
+  printf '%s Short one.\n\n' "$LONG"
+  printf 'A short line with %s inside.\n\n' "$SPAN"
+  printf '| %s |\n\n' "$LONG"
+  printf '```text\n%s\n```\n\n' "$LONG"
+  printf '<pre class="mermaid">\n%s\n</pre>\n' "$LONG"
+} >"$DIR/dev-tooling.why.md"
+printf -- '- First bullet is short.\n- Second bullet is short too.\n' >"$DIR/dev-tooling.md"
+{
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do printf -- '- **Term %s**: short meaning.\n' "$i"; done
+  printf -- '- **Wordy**: a definition that keeps going well past the point where a reader would stop and look elsewhere.\n'
+} >"$DIR/_glossary.md"
+
+run_plan render -o "$TMP/lint.html" >/dev/null 2>"$TMP/lint.err"
+assert_eq "$(grep -c 'long sentence' "$TMP/lint.err")" "1" \
+  "warns once: not for fences, tables, Mermaid, code spans or short bullets"
+assert_in 'long sentence (29 words) in dev-tooling.why.md: "This sentence is written on purpose to run' \
+  "$TMP/lint.err" "...and names the file and quotes the sentence"
+assert_in 'glossary has 14 terms; keep it to 12' "$TMP/lint.err" "warns about an oversized glossary"
+assert_in 'long glossary entry (17 words) for "Wordy"' "$TMP/lint.err" "warns about a long glossary entry"
+assert_in 'no overview' "$TMP/lint.err" "warns about a missing overview"
+[[ -f "$TMP/lint.html" ]] && ok "warnings never stop the render" || no "warnings never stop the render"
+for f in _overview.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$TMP/keep.$f" "$DIR/$f"; done
 
 OUTDIR=$(dirname "$OUT")
 [[ -f "$OUTDIR/marked.min.js" ]] && ok "copies marked alongside" || no "copies marked alongside"
