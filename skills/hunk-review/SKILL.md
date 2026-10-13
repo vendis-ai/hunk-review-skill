@@ -47,8 +47,13 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      one when annotating (step 7).
    - `reviews.path_filters` — `!`-prefixed globs the team already curated as noise. Fold these
      into "sinks to the bottom" (step 6) the same as mechanical churn.
-   - `knowledge_base.code_guidelines.filePatterns` — if it names a supplementary file (e.g.
-     `.coderabbit/review-guidelines.md`), read that too, same treatment as path_instructions.
+   - `knowledge_base.code_guidelines.filePatterns` — read every file it lists (e.g.
+     `.coderabbit/review-guidelines.md`, a coding-standards file), same treatment as
+     path_instructions. A coding-standards file ranks groups and tells the reader what the repo
+     cares about; it is not a checklist to re-run. Never turn a rule violation into an
+     annotation — the repo's own review rounds and tooling own those, and nits bury the decisions
+     `}` should land on. When an annotation is about a rule anyway, put its ID (e.g.
+     `STD-SHAPE-3`) in the annotation's `tags`.
    - `tone_instructions`, if present, may inform how annotations and the HTML writeup (step 9)
      are phrased — lightly, it is a voice preference, not a review rule.
 
