@@ -16,6 +16,11 @@
  * `hunk-plan wait` consumes go.json (renaming it to last.json) and reads
  * window.json to tell "Hunk is not open yet" from "Hunk was closed".
  *
+ * Both files carry the `planId` `hunk-plan write` stamped into the plan this
+ * window last loaded. The directory is keyed by repo, not by review, so the
+ * id is what tells `wait` that a hand-off or a quit belongs to the review it
+ * is waiting on and not to an earlier one still open in another window.
+ *
  * No hunk imports here, so this module is testable under plain `bun test`.
  * The snapshot types below are structural subsets of hunk's own
  * `ExtensionReviewSnapshot`, so the host's object passes straight in.
@@ -109,6 +114,8 @@ export interface GoMarker {
   mode: GoMode | null;
   instruction: string | null;
   repoRoot: string;
+  /** The plan this window showed; `null` for a plan written before plan ids existed. */
+  planId: string | null;
   head: string | null;
   createdAt: string;
   notes: MarkerNote[];
@@ -119,6 +126,7 @@ export interface BuildMarkerInput {
   mode: GoMode | null;
   instruction: string | null;
   repoRoot: string;
+  planId: string | null;
   head: string | null;
   now: Date;
   snapshot: SnapshotLike | null;
@@ -177,6 +185,7 @@ export function buildMarker(input: BuildMarkerInput): GoMarker {
     mode: input.kind === "go" ? input.mode : null,
     instruction: instruction === "" ? null : instruction,
     repoRoot: input.repoRoot,
+    planId: input.planId,
     head: input.head,
     createdAt: input.now.toISOString(),
     notes,
@@ -188,6 +197,16 @@ export function rememberFileKeys(known: ReadonlyMap<string, string>, snapshot: S
   const next = new Map(known);
   for (const file of snapshot?.files ?? []) next.set(file.fileKey, file.path);
   return next;
+}
+
+/**
+ * True when a newer plan replaced the one this window loaded, so a send from
+ * it would answer a review the agent is no longer waiting on. Unknown on
+ * either side (a plan written before plan ids, or none on disk) is not
+ * "replaced": `hunk-plan wait` falls back to file times for those.
+ */
+export function planReplaced(loadedId: string | null, onDiskId: string | null): boolean {
+  return loadedId !== null && onDiskId !== null && loadedId !== onDiskId;
 }
 
 /** The new user notes a marker delivers. */
@@ -221,11 +240,13 @@ export interface WindowPresence {
   version: 1;
   pid: number;
   startedAt: string;
+  /** The plan the window shows; rewritten when a reload loads a newer one. */
+  planId: string | null;
   closedAt?: string;
 }
 
-export function windowOpened(pid: number, now: Date): WindowPresence {
-  return { version: 1, pid, startedAt: now.toISOString() };
+export function windowOpened(pid: number, startedAt: Date, planId: string | null): WindowPresence {
+  return { version: 1, pid, startedAt: startedAt.toISOString(), planId };
 }
 
 /**
@@ -244,7 +265,8 @@ export function readWindow(filePath: string): WindowPresence | null {
     if (typeof parsed !== "object" || parsed === null) return null;
     const raw = parsed as Record<string, unknown>;
     if (raw.version !== 1 || typeof raw.pid !== "number" || typeof raw.startedAt !== "string") return null;
-    const out: WindowPresence = { version: 1, pid: raw.pid, startedAt: raw.startedAt };
+    const planId = typeof raw.planId === "string" ? raw.planId : null;
+    const out: WindowPresence = { version: 1, pid: raw.pid, startedAt: raw.startedAt, planId };
     if (typeof raw.closedAt === "string") out.closedAt = raw.closedAt;
     return out;
   } catch {

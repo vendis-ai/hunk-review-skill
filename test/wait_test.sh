@@ -82,7 +82,13 @@ run_wait() {
   RC=$?
 }
 
-# write_marker <kind>: a hand-off as the extension writes it.
+# json_id [<id>]: a plan id as JSON, null when there is none.
+json_id() {
+  if [[ -n ${1:-} ]]; then printf '"%s"' "$1"; else printf 'null'; fi
+}
+
+# write_marker <kind> [<planId>]: a hand-off as the extension writes it. No
+# plan id is what an extension from before plan ids writes.
 write_marker() {
   mkdir -p "$LOOP"
   cat >"$LOOP/go.json" <<JSON
@@ -92,6 +98,7 @@ write_marker() {
   "mode": $([[ $1 == go ]] && echo '"fix-clear"' || echo null),
   "instruction": null,
   "repoRoot": "$FIXTURE",
+  "planId": $(json_id "${2:-}"),
   "head": null,
   "createdAt": "2026-10-01T12:00:00.000Z",
   "notes": [
@@ -102,13 +109,15 @@ write_marker() {
 JSON
 }
 
-# write_window <pid> [closed]: Hunk's presence record.
+# write_window <pid> [open|closed] [<planId>]: Hunk's presence record.
 write_window() {
+  local id
+  id=$(json_id "${3:-}")
   mkdir -p "$LOOP"
   if [[ ${2:-} == closed ]]; then
-    printf '{"version":1,"pid":%s,"startedAt":"x","closedAt":"y"}\n' "$1" >"$LOOP/window.json"
+    printf '{"version":1,"pid":%s,"startedAt":"x","planId":%s,"closedAt":"y"}\n' "$1" "$id" >"$LOOP/window.json"
   else
-    printf '{"version":1,"pid":%s,"startedAt":"x"}\n' "$1" >"$LOOP/window.json"
+    printf '{"version":1,"pid":%s,"startedAt":"x","planId":%s}\n' "$1" "$id" >"$LOOP/window.json"
   fi
 }
 
@@ -199,6 +208,51 @@ assert_eq "$RC" "0" "a hand-off left behind by a closed window is still delivere
 rm -f "$LOOP/window.json"
 
 echo
+echo "plan ids: only an answer to this plan counts"
+
+PLAN_ID=$(jq -r '.planId // empty' "$PLAN")
+[[ -n $PLAN_ID ]] && ok "write stamps a plan id" || no "write stamps a plan id"
+printf '{"version":1,"planId":"forged","groups":[]}' | run_plan write >/dev/null 2>&1
+NEXT_ID=$(jq -r '.planId // empty' "$PLAN")
+[[ -n $NEXT_ID && $NEXT_ID != forged && $NEXT_ID != "$PLAN_ID" ]] &&
+  ok "every write stamps a fresh id, replacing one the input carried" ||
+  no "every write stamps a fresh id, replacing one the input carried (got '$NEXT_ID')"
+PLAN_ID=$NEXT_ID
+
+write_marker approve "an-earlier-plan"
+run_wait --timeout 0
+assert_eq "$RC" "2" "an approval from a window showing an earlier plan is not delivered"
+assert_eq "$(jq -r '.kind' "$LOOP/stale.json")" "approve" "it is set aside as stale.json, notes and all"
+assert_no_file "$LOOP/go.json" "and not retried"
+grep -q 'earlier plan; press r in Hunk and send again' "$ERR" && ok "says why, and what to do" || no "says why, and what to do ($(cat "$ERR"))"
+
+write_marker go "$PLAN_ID"
+run_wait --timeout 5
+assert_eq "$RC" "0" "a hand-off for this plan is delivered"
+assert_eq "$(jq -r '.planId' "$OUT")" "$PLAN_ID" "and carries the plan id"
+
+write_marker approve
+touch -t 202001010000 "$LOOP/go.json"
+run_wait --timeout 0
+assert_eq "$RC" "2" "without an id, a hand-off older than the plan answers an earlier review"
+
+write_window $$ closed "an-earlier-plan"
+run_wait --timeout 0
+assert_eq "$RC" "2" "a window that showed an earlier plan quitting after this one was written does not end the wait"
+
+write_window $$ closed "$PLAN_ID"
+run_wait --timeout 5
+assert_eq "$RC" "3" "a window that showed this plan quitting does"
+rm -f "$LOOP/window.json"
+
+jq 'del(.planId)' "$PLAN" >"$TMP/plan.json" && mv "$TMP/plan.json" "$PLAN"
+write_marker go "some-id"
+run_wait --timeout 5
+assert_eq "$RC" "0" "a plan without an id (written by hand) falls back to file times"
+printf '{"version":1,"groups":[]}' | run_plan write >/dev/null 2>&1
+PLAN_ID=$(jq -r '.planId // empty' "$PLAN")
+
+echo
 echo "GO / APPROVE notes, without the extension"
 
 cat >"$TMP/comments.json" <<'JSON'
@@ -233,6 +287,21 @@ cat >"$TMP/comments.json" <<'JSON'
 JSON
 run_wait --timeout 5
 assert_eq "$RC" "10" "an APPROVE note: exit 10"
+assert_eq "$(jq -r '.planId' "$OUT")" "$PLAN_ID" "and carries the plan id"
+
+cat >"$TMP/comments.json" <<'JSON'
+{ "comments": [ { "noteId": "user:4-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE",
+                  "createdAt": "2020-01-01T00:00:00.000Z" } ] }
+JSON
+run_wait --timeout 0
+assert_eq "$RC" "2" "an APPROVE note written before this plan answers an earlier review"
+
+cat >"$TMP/comments.json" <<'JSON'
+{ "comments": [ { "noteId": "user:5-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE",
+                  "createdAt": "2099-01-01T00:00:00.000Z" } ] }
+JSON
+run_wait --timeout 5
+assert_eq "$RC" "10" "one written after the plan counts"
 rm -f "$TMP/comments.json"
 
 echo

@@ -10,6 +10,7 @@ import {
   markerPath,
   MODE_CHOICES,
   modeFromLabel,
+  planReplaced,
   readHead,
   readWindow,
   rememberFileKeys,
@@ -48,6 +49,7 @@ function input(overrides: Partial<BuildMarkerInput> = {}): BuildMarkerInput {
     mode: "fix-clear",
     instruction: null,
     repoRoot: "/repo",
+    planId: "plan-1",
     head: "a".repeat(40),
     now: NOW,
     snapshot: { files: [{ fileKey: "file:a", path: "src/a.ts" }], notes: [note()] },
@@ -84,7 +86,7 @@ describe("paths", () => {
 });
 
 describe("buildMarker", () => {
-  test("carries mode, trimmed instruction, head and time", () => {
+  test("carries mode, trimmed instruction, plan id, head and time", () => {
     const marker = buildMarker(input({ instruction: "  also rename foo  " }));
     expect(marker).toMatchObject({
       version: 1,
@@ -92,9 +94,14 @@ describe("buildMarker", () => {
       mode: "fix-clear",
       instruction: "also rename foo",
       repoRoot: "/repo",
+      planId: "plan-1",
       head: "a".repeat(40),
       createdAt: "2026-10-01T12:00:00.000Z",
     });
+  });
+
+  test("a plan from before plan ids gives a null plan id, not a missing one", () => {
+    expect(buildMarker(input({ planId: null })).planId).toBeNull();
   });
 
   test("a blank instruction is no instruction", () => {
@@ -220,19 +227,42 @@ describe("rememberFileKeys", () => {
   });
 });
 
+describe("planReplaced", () => {
+  test("a different plan on disk than the one loaded is a replaced plan", () => {
+    expect(planReplaced("plan-1", "plan-2")).toBe(true);
+  });
+
+  test("the same plan, or an id unknown on either side, is not", () => {
+    expect(planReplaced("plan-1", "plan-1")).toBe(false);
+    expect(planReplaced(null, "plan-2")).toBe(false);
+    expect(planReplaced("plan-1", null)).toBe(false);
+    expect(planReplaced(null, null)).toBe(false);
+  });
+});
+
 describe("window presence", () => {
-  test("closing marks the window closed when it is still ours", () => {
-    const opened = windowOpened(42, NOW);
+  test("records the plan the window shows", () => {
+    expect(windowOpened(42, NOW, "plan-1")).toEqual({
+      version: 1,
+      pid: 42,
+      startedAt: "2026-10-01T12:00:00.000Z",
+      planId: "plan-1",
+    });
+  });
+
+  test("closing marks the window closed when it is still ours, keeping its plan", () => {
+    const opened = windowOpened(42, NOW, "plan-1");
     expect(windowClosed(opened, 42, new Date("2026-10-01T13:00:00.000Z"))).toEqual({
       version: 1,
       pid: 42,
       startedAt: "2026-10-01T12:00:00.000Z",
+      planId: "plan-1",
       closedAt: "2026-10-01T13:00:00.000Z",
     });
   });
 
   test("closing leaves another window's record alone", () => {
-    expect(windowClosed(windowOpened(42, NOW), 7, NOW)).toBeNull();
+    expect(windowClosed(windowOpened(42, NOW, "plan-1"), 7, NOW)).toBeNull();
     expect(windowClosed(null, 7, NOW)).toBeNull();
   });
 
@@ -240,12 +270,18 @@ describe("window presence", () => {
     const dir = mkdtemp();
     const file = path.join(dir, "nested", "window.json");
     expect(readWindow(file)).toBeNull();
-    expect(writeJsonAtomic(file, windowOpened(42, NOW))).toBe(true);
-    expect(readWindow(file)).toEqual(windowOpened(42, NOW));
+    expect(writeJsonAtomic(file, windowOpened(42, NOW, "plan-1"))).toBe(true);
+    expect(readWindow(file)).toEqual(windowOpened(42, NOW, "plan-1"));
     fs.writeFileSync(file, "{not json");
     expect(readWindow(file)).toBeNull();
     fs.writeFileSync(file, JSON.stringify({ version: 2, pid: 1, startedAt: "x" }));
     expect(readWindow(file)).toBeNull();
+  });
+
+  test("a record from before plan ids reads with a null plan id", () => {
+    const file = path.join(mkdtemp(), "window.json");
+    fs.writeFileSync(file, JSON.stringify({ version: 1, pid: 1, startedAt: "x" }));
+    expect(readWindow(file)).toEqual({ version: 1, pid: 1, startedAt: "x", planId: null });
   });
 });
 

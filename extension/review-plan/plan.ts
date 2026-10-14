@@ -53,6 +53,8 @@ export interface PlanGroup {
 
 export interface ReviewPlan {
   version: 1;
+  /** Stamped by `hunk-plan write`, fresh on every write; never authored. Ties review-loop hand-offs to this plan. */
+  planId?: string;
   generatedAt?: string;
   label?: string;
   summary?: string; // one-line thesis for the whole changeset
@@ -235,6 +237,7 @@ export function validatePlan(input: unknown): ValidatePlanResult {
   }
 
   const plan: ReviewPlan = { version: 1, groups };
+  if (typeof raw.planId === "string" && raw.planId !== "") plan.planId = raw.planId;
   if (typeof raw.generatedAt === "string") plan.generatedAt = raw.generatedAt;
   if (typeof raw.label === "string") plan.label = raw.label;
   if (typeof raw.summary === "string") plan.summary = raw.summary;

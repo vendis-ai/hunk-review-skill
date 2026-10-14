@@ -32,7 +32,9 @@ Commands:
                         <repoRoot>/.hunk/review-plan.json with --in-repo).
   write [--in-repo]     Read a plan as JSON on stdin, validate it (version==1,
                         a "groups" array), and write it atomically to the
-                        resolved path (default: state-dir path).
+                        resolved path (default: state-dir path). Each write
+                        stamps a fresh "planId" into the stored plan, which
+                        ties review-loop hand-offs to it (see wait).
   show                  Print the resolved plan (checks HUNK_REVIEW_PLAN, then
                         the in-repo path, then the state-dir path -- same
                         order plan.ts uses) or exit 1 naming what was checked.
@@ -86,6 +88,10 @@ Commands:
                         Without the extension, a note typed in Hunk that reads
                         GO (or "GO: <instruction>") or APPROVE does the same
                         through the session daemon, and is removed once read.
+                        Only an answer to the current plan counts: a hand-off
+                        from a window still showing an earlier plan is set
+                        aside as <loop>/stale.json (named on stderr) and the
+                        wait goes on, and so does a quit of such a window.
                         Exit codes: 0 go, 10 approved, 2 still waiting (run it
                         again), 3 nothing to wait on (no plan and no Hunk
                         window, or Hunk was closed since the plan was written).
@@ -118,6 +124,23 @@ digest_for() {
 
 state_dir() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+# A new plan id: UTC time plus 32 random bits, unique per write.
+new_plan_id() {
+  printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# The id `write` stamped into a plan or a hand-off file; nothing for one from
+# before plan ids, or for no file at all.
+plan_id_of() {
+  [[ -n ${1:-} && -f $1 ]] || return 0
+  jq -r '.planId // empty | strings' "$1" 2>/dev/null || true
+}
+
+# A file's modification time in epoch seconds: GNU stat, then BSD stat.
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 
 state_plan_path() {
@@ -191,7 +214,19 @@ cmd_write() {
     die "stdin is not a valid review plan (need JSON with \"version\": 1 and a \"groups\" array)"
   fi
 
-  mv -f "$tmp" "$target"
+  # A fresh id on every write, replacing any the input carried. Hand-offs from
+  # Hunk carry the id of the plan their window showed, so `wait` can tell an
+  # answer to this plan from one a still-open window sends for an earlier
+  # review: the loop directory is keyed by repo, not by review.
+  local stamped
+  stamped=$(mktemp "$dir/.review-plan.XXXXXX")
+  if ! jq --arg id "$(new_plan_id)" '.planId = $id' "$tmp" >"$stamped"; then
+    rm -f "$tmp" "$stamped"
+    die "failed to stamp the plan id"
+  fi
+  rm -f "$tmp"
+
+  mv -f "$stamped" "$target"
   manifest_record "$root"
   echo "$PROG: wrote $target"
 
@@ -959,15 +994,37 @@ emit_marker() {
   exit "$WAIT_GO"
 }
 
+# True when a hand-off file answers an earlier plan than the one waited on.
+# With an id on both sides the ids decide. Without one (a plan, or an
+# extension, from before plan ids) a file older than the plan belongs to an
+# earlier review -- the rule window_closed applies to window.json.
+for_earlier_plan() {
+  local file="$1" plan="$2" plan_id="$3" file_id
+  [[ -n $plan ]] || return 1
+  file_id=$(plan_id_of "$file")
+  if [[ -n $plan_id && -n $file_id ]]; then
+    [[ $file_id != "$plan_id" ]]
+    return
+  fi
+  [[ $plan -nt $file ]]
+}
+
 # Take go.json if it is there. The rename is the claim: with two waiters on one
-# repo only one rename succeeds, so a hand-off is delivered exactly once.
+# repo only one rename succeeds, so a hand-off is delivered exactly once. A
+# hand-off for an earlier plan is set aside, never delivered: an approval of
+# the old content must not approve this review. Its notes stay in stale.json.
 take_marker() {
-  local loop="$1" taken
+  local loop="$1" plan="$2" plan_id="$3" taken
   taken="$loop/taken.$$.json"
   mv "$loop/go.json" "$taken" 2>/dev/null || return 1
   if ! jq -e '.version == 1 and (.kind == "go" or .kind == "approve")' "$taken" >/dev/null 2>&1; then
     mv -f "$taken" "$loop/invalid.json"
     die "ignored an unreadable hand-off; it is kept at $loop/invalid.json"
+  fi
+  if for_earlier_plan "$taken" "$plan" "$plan_id"; then
+    mv -f "$taken" "$loop/stale.json"
+    echo "$PROG: set aside a hand-off from a Hunk window showing an earlier plan; press r in Hunk and send again (kept at $loop/stale.json)" >&2
+    return 1
   fi
   mv -f "$taken" "$loop/last.json"
   emit_marker "$loop/last.json"
@@ -979,20 +1036,26 @@ take_marker() {
 # fires. Read through the session daemon, so this path
 # does not survive #1138 the way the extension's does. Each sentinel fires
 # once: its id is recorded, and it is removed from the session when possible.
+# Only a note written after the plan counts; one typed into a window that
+# still shows an earlier review answers that review. A note whose time cannot
+# be read counts, as before.
 take_sentinel() {
-  local root="$1" loop="$2" list seen head marker id
+  local root="$1" loop="$2" plan="$3" plan_id="$4" list seen head marker id since=0
   command -v hunk >/dev/null 2>&1 || return 1
   list=$(hunk session comment list --repo "$root" --type user --json 2>/dev/null) || return 1
   seen='[]'
   [[ -f "$loop/sentinels" ]] && seen=$(jq -R -s 'split("\n") | map(select(length > 0))' "$loop/sentinels")
   head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+  if [[ -n $plan ]]; then since=$(mtime_of "$plan") || since=0; fi
 
   marker=$(printf '%s' "$list" | jq -e \
-    --arg root "$root" --arg head "$head" --argjson seen "$seen" \
-    --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    --arg root "$root" --arg head "$head" --argjson seen "$seen" --argjson since "${since:-0}" \
+    --arg planId "$plan_id" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     def text: (.body // .summary // "");
+    def written: (try (.createdAt | sub("\\.[0-9]+"; "") | fromdateiso8601) catch null);
     [.comments[]?] as $all
     | [ $all[] | select(.noteId as $id | $seen | any(. == $id) | not)
+               | select(written as $t | $t == null or $t >= $since)
                | select(text | test("\\A\\s*(GO|APPROVE)(\\s*:|\\s|\\z)")) ] | first
     | select(. != null) as $s
     | ($s | text | capture("\\A\\s*(?<kw>GO|APPROVE)(\\s*:\\s*|\\s+|\\z)(?<rest>.*)\\z"; "p")) as $m
@@ -1003,6 +1066,7 @@ take_sentinel() {
         mode: (if $m.kw == "GO" then "fix-clear" else null end),
         instruction: (if $m.kw == "GO" and ($rest | length) > 0 then $rest else null end),
         repoRoot: $root,
+        planId: (if $planId == "" then null else $planId end),
         head: (if $head == "" then null else $head end),
         createdAt: $now,
         sentinel: $s.noteId,
@@ -1029,12 +1093,13 @@ take_sentinel() {
 }
 
 # True when Hunk had this repo open for the current plan and has quit since,
-# cleanly (closedAt) or not (the process is gone). A window record older than
-# the plan belongs to an earlier review and says nothing about this one.
+# cleanly (closedAt) or not (the process is gone). A window that showed an
+# earlier plan says nothing about this one, even when it quits after this plan
+# was written; for_earlier_plan decides, by plan id or by file time.
 window_closed() {
-  local window="$1" plan="$2" closed pid
+  local window="$1" plan="$2" plan_id="$3" closed pid
   [[ -f $window ]] || return 1
-  [[ -n $plan && $plan -nt $window ]] && return 1
+  for_earlier_plan "$window" "$plan" "$plan_id" && return 1
   closed=$(jq -r '.closedAt // empty' "$window" 2>/dev/null) || return 1
   [[ -n $closed ]] && return 0
   pid=$(jq -r '.pid // empty' "$window" 2>/dev/null) || return 1
@@ -1042,7 +1107,7 @@ window_closed() {
 }
 
 cmd_wait() {
-  local root loop plan timeout=480 args=("$@") i start next_sentinel=0
+  local root loop plan plan_id timeout=480 args=("$@") i start next_sentinel=0
   for ((i = 0; i < ${#args[@]}; i++)); do
     if [[ ${args[i]} == "--timeout" ]]; then
       timeout="${args[i + 1]:-}"
@@ -1054,6 +1119,7 @@ cmd_wait() {
   root=$(repo_root)
   loop=$(loop_dir_for "$root")
   plan=$(resolve_plan "$root" 2>/dev/null) || plan=""
+  plan_id=$(plan_id_of "$plan")
 
   if [[ -z $plan && ! -f "$loop/window.json" && ! -f "$loop/go.json" ]]; then
     echo "$PROG: nothing to wait on: no review plan for $root, and Hunk has not opened it" >&2
@@ -1064,12 +1130,12 @@ cmd_wait() {
   while :; do
     # Both take_* functions exit the script when they deliver something, and
     # return 1 when there was nothing to take -- which `set -e` must not see.
-    if [[ -f "$loop/go.json" ]]; then take_marker "$loop" || true; fi
+    if [[ -f "$loop/go.json" ]]; then take_marker "$loop" "$plan" "$plan_id" || true; fi
     if ((SECONDS >= next_sentinel)); then
-      take_sentinel "$root" "$loop" || true
+      take_sentinel "$root" "$loop" "$plan" "$plan_id" || true
       next_sentinel=$((SECONDS + SENTINEL_EVERY))
     fi
-    if window_closed "$loop/window.json" "$plan"; then
+    if window_closed "$loop/window.json" "$plan" "$plan_id"; then
       echo "$PROG: nothing to wait on: Hunk was closed without sending the review back" >&2
       exit "$WAIT_NOTHING"
     fi

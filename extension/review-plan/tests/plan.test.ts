@@ -44,6 +44,15 @@ describe("validatePlan", () => {
     if (!result.ok) expect(result.error).toMatch(/version/i);
   });
 
+  test("keeps the plan id hunk-plan write stamped, and drops an empty or non-string one", () => {
+    const stamped = validatePlan({ version: 1, planId: "20261015T120000Z-0a1b2c3d", groups: [] });
+    expect(stamped.ok && stamped.plan.planId).toBe("20261015T120000Z-0a1b2c3d");
+    for (const planId of ["", 42, null]) {
+      const result = validatePlan({ version: 1, planId, groups: [] });
+      expect(result.ok && "planId" in result.plan).toBe(false);
+    }
+  });
+
   test("rejects groups that are not an array", () => {
     const result = validatePlan({ version: 1, groups: "nope" });
     expect(result.ok).toBe(false);

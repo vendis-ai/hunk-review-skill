@@ -238,7 +238,9 @@ You don't have to start that by hand. `/hunk-review` ends by waiting for you (`h
 press `S` in Hunk when your notes are in, choose how much the agent may change (fix what's clear
 and ask about the rest, explain only, or fix everything), and it works through them, re-renders
 the writeup and waits again. Press `r` to see its changes, and `A` when you're done. Without the
-extension, a note reading `GO` or `APPROVE` does the same.
+extension, a note reading `GO` or `APPROVE` does the same. Once a new plan is written, a window
+still showing the earlier one can't send or approve; it asks you to press `r` first, so an old
+approval never lands on a new review.
 
 When another skill runs `/hunk-review` as a sub-agent, the sub-agent only writes the plan and the
 writeup and hands back the Hunk command. The session that started it does the waiting, because

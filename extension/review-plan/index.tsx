@@ -31,6 +31,7 @@ import {
   MODE_CHOICES,
   markerPath,
   modeFromLabel,
+  planReplaced,
   readHead,
   readWindow,
   rememberFileKeys,
@@ -332,8 +333,13 @@ interface LoopState {
   sentIds: Set<string>;
   /** User notes in the marker written last, not yet known to be picked up. */
   pendingIds: Set<string>;
+  /** The plan id of the plan this window loaded last; `null` before ids existed. */
+  planId: string | null;
   /** The repo whose window.json this process wrote. */
   windowRepo: string | null;
+  /** The plan id that window.json records, and when this window first opened the repo. */
+  windowPlanId: string | null;
+  windowStartedAt: Date | null;
 }
 
 const loop: LoopState = {
@@ -341,14 +347,23 @@ const loop: LoopState = {
   notePaths: new Map(),
   sentIds: new Set(),
   pendingIds: new Set(),
+  planId: null,
   windowRepo: null,
+  windowPlanId: null,
+  windowStartedAt: null,
 };
 
-/** Tell `hunk-plan wait` a Hunk window has this repo open. Once per repo per process. */
-function markWindowOpen(repoRoot: string): void {
-  if (loop.windowRepo === repoRoot) return;
-  if (writeJsonAtomic(windowPath(repoRoot, process.env), windowOpened(process.pid, new Date()))) {
+/**
+ * Tell `hunk-plan wait` a Hunk window has this repo open, and which plan it
+ * shows. Written once per repo, and again when a reload loads a newer plan.
+ */
+function markWindowOpen(repoRoot: string, planId: string | null): void {
+  if (loop.windowRepo === repoRoot && loop.windowPlanId === planId) return;
+  const startedAt = loop.windowRepo === repoRoot && loop.windowStartedAt ? loop.windowStartedAt : new Date();
+  if (writeJsonAtomic(windowPath(repoRoot, process.env), windowOpened(process.pid, startedAt, planId))) {
     loop.windowRepo = repoRoot;
+    loop.windowPlanId = planId;
+    loop.windowStartedAt = startedAt;
   }
 }
 
@@ -369,6 +384,10 @@ function markWindowClosed(): void {
 function deliver(ctx: ExtensionCommandContext, kind: MarkerKind, mode: GoMode | null, instruction: string | null): void {
   const state = store.getSnapshot();
   if (!state.repoRoot) return;
+  if (planReplaced(loop.planId, loadPlan(state.repoRoot, process.env).plan?.planId ?? null)) {
+    ctx.notify("A newer review plan was written since this window loaded it. Press r to reload, then send again.", "warning");
+    return;
+  }
   const snapshot = ctx.review.snapshot();
   if (!snapshot) {
     ctx.notify("The review reloaded before this could be sent. Press the key again.", "warning");
@@ -385,6 +404,7 @@ function deliver(ctx: ExtensionCommandContext, kind: MarkerKind, mode: GoMode | 
     mode,
     instruction,
     repoRoot: state.repoRoot,
+    planId: loop.planId,
     head: readHead(state.repoRoot),
     now: new Date(),
     snapshot,
@@ -638,8 +658,9 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
 
   hunk.transformChangeset(async (changeset: ExtensionChangeset, ctx) => {
     const repoRoot = findRepoRoot(ctx.cwd) ?? ctx.cwd;
-    markWindowOpen(repoRoot);
     const loaded = loadPlan(repoRoot, process.env);
+    loop.planId = loaded.plan?.planId ?? null;
+    markWindowOpen(repoRoot, loop.planId);
 
     if (loaded.error) {
       ctx.notify(`review-plan: ${loaded.error}`, "warning");

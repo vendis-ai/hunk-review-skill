@@ -283,3 +283,11 @@ open, so `wait` can tell "not opened yet" from "closed". The hand-off carries
 the notes themselves, read from the Hunk process rather than through the
 session daemon, so it still works after a reload has dropped the session
 ([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138)).
+
+The directory is keyed by repo, not by review, so both files also carry the
+`planId` that `hunk-plan write` stamps into every plan it writes: the id of the
+plan this window loaded last, refreshed on each reload. A window still showing
+an earlier plan refuses `S` and `A` and asks for `r` first. If one gets through
+anyway (an extension from before plan ids, or a write that lands mid-send),
+`wait` sets it aside as `stale.json` instead of delivering it, and a quit of
+such a window does not end the wait for the new plan.
