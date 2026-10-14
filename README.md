@@ -240,6 +240,10 @@ and ask about the rest, explain only, or fix everything), and it works through t
 the writeup and waits again. Press `r` to see its changes, and `A` when you're done. Without the
 extension, a note reading `GO` or `APPROVE` does the same.
 
+When another skill runs `/hunk-review` as a sub-agent, the sub-agent only writes the plan and the
+writeup and hands back the Hunk command. The session that started it does the waiting, because
+nothing wakes a sub-agent once it has returned.
+
 ### Keeping your notes
 
 Hunk keeps notes only in the running window

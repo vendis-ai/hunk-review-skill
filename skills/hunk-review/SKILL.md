@@ -429,6 +429,14 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     how much to change and for an optional instruction), or `A` to approve. Without the
     extension, a note reading `GO` (or `GO: <instruction>`) or `APPROVE` does the same.
 
+    **Plan only, when you run as a sub-agent.** If a caller dispatched you as a sub-agent, or
+    told you "plan only", skip this step: stop after step 10 and never run `hunk-plan wait`. A
+    sub-agent that ends its turn returns to its caller, and nothing wakes it again, so a
+    background wait would deliver the reviewer's `S` to no one. Return to the caller instead: the
+    plan path (`hunk-plan path`), the writeup's `file://` URL, the exact `hunk diff <merge-base>`
+    command, the counts from step 10, and one line saying the caller owns this step —
+    `hunk-plan wait`, then hunk-handle-notes on each go.
+
         hunk-plan wait
 
     It blocks for at most 8 minutes (`--timeout <seconds>` changes that) and prints the hand-off
