@@ -320,6 +320,47 @@ describe("validatePlan - annotations and top-level summary", () => {
     expect(result.plan.groups[0]!.files[0]!.annotations![0]!.tags).toEqual(["a"]);
   });
 
+  test("keeps a group's door and blast radius", () => {
+    const result = validatePlan({
+      version: 1,
+      groups: [
+        {
+          title: "Migration",
+          door: "one-way",
+          blastRadius: { scope: "tenant", note: "Every account's rows are rewritten." },
+          files: [{ path: "a.ts" }],
+        },
+        { title: "Docs", door: "two-way", files: [{ path: "b.ts" }] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.groups[0]!.door).toBe("one-way");
+    expect(result.plan.groups[0]!.blastRadius).toEqual({ scope: "tenant", note: "Every account's rows are rewritten." });
+    expect(result.plan.groups[1]!.door).toBe("two-way");
+    expect(result.plan.groups[1]!.blastRadius).toBeUndefined();
+  });
+
+  test("an unknown door or a malformed blast radius is dropped, not fatal", () => {
+    const blastRadii = [
+      "tenant",
+      { scope: "two words", note: "x" },
+      { scope: "tenant" },
+      { scope: "tenant", note: " " },
+      { note: "x" },
+    ];
+    for (const [i, blastRadius] of blastRadii.entries()) {
+      const result = validatePlan({
+        version: 1,
+        groups: [{ title: "Auth", door: ["oneway", "One-way", 1, null, ""][i], blastRadius, files: [{ path: "a.ts" }] }],
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.plan.groups[0]!.door).toBeUndefined();
+      expect(result.plan.groups[0]!.blastRadius).toBeUndefined();
+    }
+  });
+
   test("backward compatible: no annotations key and no top-level summary validate exactly as before", () => {
     const result = validatePlan({
       version: 1,

@@ -113,6 +113,11 @@ collapsed block for the trade-offs, a Mermaid diagram where the substance is a s
 and a table of contents. `Skim`-tier groups start collapsed, so the page opens showing only what
 needs a decision.
 
+Next to each verdict badge sits a door badge: `One-way` when reverting the commit would not undo
+the change, `Two-way` when it would. A line under the group's summary names who is hit if it goes
+wrong. The agent makes that call from the diff and the spec before it reads any merge-danger
+verdict, so it is a second opinion. `hunk-plan write` warns when a one-way group is ranked `Skim`.
+
 The prose follows short-sentence rules taken from ASD-STE100: one fact per sentence, the small
 words kept, the effect before the mechanism. `hunk-plan render` names every sentence over 25
 words on stderr, so the agent rewrites them before you read the page.

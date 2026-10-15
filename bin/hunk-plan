@@ -35,7 +35,10 @@ Commands:
                         a "groups" array), and write it atomically to the
                         resolved path (default: state-dir path). Each write
                         stamps a fresh "planId" into the stored plan, which
-                        ties review-loop hand-offs to it (see wait).
+                        ties review-loop hand-offs to it (see wait). Warns on
+                        stderr, after writing, about a one-way group ranked
+                        Skim, an unknown "door" value and a malformed
+                        "blastRadius".
   show                  Print the resolved plan (checks HUNK_REVIEW_PLAN, then
                         the in-repo path, then the state-dir path -- same
                         order plan.ts uses) or exit 1 naming what was checked.
@@ -253,6 +256,11 @@ cmd_write() {
   mv -f "$stamped" "$target"
   manifest_record "$root"
   echo "$PROG: wrote $target"
+
+  local warning
+  while IFS= read -r warning; do
+    if [[ -n $warning ]]; then echo "$PROG: $warning" >&2; fi
+  done < <(jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null)
 
   # Never delete as a side effect of a write -- just say when the drawer is
   # full. Removal stays an explicit `gc`.
@@ -624,20 +632,43 @@ resolve_plan() {
   exit 1
 }
 
-# One group per line: slug, badge tier, collapsed flag, then base64 title and
-# summary (they carry arbitrary text; base64 keeps @tsv honest).
+# How a group's fields read, shared by `render` and `write`'s checks so a badge
+# and a warning can never disagree. Each mirrors the review-plan extension's
+# plan.ts: absent importance defaults to 50 and values clamp to 0..100; a door
+# is "one-way" or "two-way"; a blast radius is a one-word scope plus a
+# non-empty note. Anything else reads as null, as plan.ts drops it.
+GROUP_JQ_DEFS='
+  def importance_of:
+    if (.importance | type) == "number"
+    then (.importance | if . < 0 then 0 elif . > 100 then 100 else . end)
+    else 50 end;
+  def tier_of: if . <= 2 then "critical" elif . <= 5 then "review" else "skim" end;
+  def door_of: if .door == "one-way" or .door == "two-way" then .door else null end;
+  def blast_of:
+    .blastRadius as $b
+    | if ($b | type) == "object"
+         and ($b.scope | type) == "string" and ($b.scope | length > 0)
+         and ($b.scope | test("\\s") | not)
+         and ($b.note | type) == "string" and ($b.note | test("\\S"))
+      then {scope: $b.scope, note: $b.note} else null end;
+'
+
+# One group per line: slug, badge tier, collapsed flag, door ("-" for none),
+# then base64 title, blast scope, blast note ("-" for none) and summary (they
+# carry arbitrary text; base64 keeps @tsv honest). Only the last field may be
+# empty: `read` with IFS=$'\t' collapses a run of tabs, so an empty middle field
+# would shift every field after it.
 #
-# Ordering and importance mirror the review-plan extension's plan.ts exactly --
-# absent importance defaults to 50, values clamp to 0..100, groups sort by
-# [hidden, importance, declaration order]. The HTML and the TUI must not be able
-# to disagree about which group leads.
-GROUPS_JQ='
+# Ordering and importance mirror plan.ts exactly -- groups sort by [hidden,
+# importance, declaration order]. The HTML and the TUI must not be able to
+# disagree about which group leads.
+GROUPS_JQ="$GROUP_JQ_DEFS"'
   [ .groups[]? | {
       title: .title,
       summary: (.summary // ""),
-      imp: (if (.importance | type) == "number"
-            then (.importance | if . < 0 then 0 elif . > 100 then 100 else . end)
-            else 50 end),
+      imp: importance_of,
+      door: door_of,
+      blast: blast_of,
       hidden: (.hidden == true),
       collapsed: (.collapsed == true)
     } ]
@@ -647,11 +678,34 @@ GROUPS_JQ='
   | . as $g
   | ($g.title | ascii_downcase | gsub("[^a-z0-9]+"; "-")
               | gsub("^-+"; "") | gsub("-+$"; "")) as $slug
-  | (if $g.imp <= 2 then "critical" elif $g.imp <= 5 then "review" else "skim" end) as $tier
+  | ($g.imp | tier_of) as $tier
   | [ $slug, $tier,
       (if ($g.collapsed or $tier == "skim") then "1" else "0" end),
-      ($g.title | @base64), ($g.summary | @base64) ]
+      ($g.door // "-"),
+      ($g.title | @base64),
+      (if $g.blast then ($g.blast.scope | @base64) else "-" end),
+      (if $g.blast then ($g.blast.note | @base64) else "-" end),
+      ($g.summary | @base64) ]
   | @tsv
+'
+
+# Advice on what a plan says about each group's door, one line per finding.
+# Warnings only: the plan is already written when they print. A one-way group
+# at Skim starts collapsed in the writeup, which is the wrong default for a
+# change a revert cannot undo; an unknown door or a malformed blast radius would
+# drop its badge, and with it this very check, without a word.
+DOOR_WARNINGS_JQ="$GROUP_JQ_DEFS"'
+  .groups[]? | select(type == "object")
+  | (.title // "" | tostring) as $t
+  | ( if has("door") and door_of == null
+      then "group \"\($t)\" has door \(.door | tojson); use \"one-way\" or \"two-way\""
+      else empty end ),
+    ( if has("blastRadius") and blast_of == null
+      then "group \"\($t)\" has a malformed blastRadius; use {\"scope\": \"<one word>\", \"note\": \"<one sentence>\"}"
+      else empty end ),
+    ( if door_of == "one-way" and (importance_of | tier_of) == "skim"
+      then "group \"\($t)\" is one-way but ranked Skim (importance \(importance_of)); rank it 5 or lower, or say in the writeup why a skim is enough"
+      else empty end )
 '
 
 cmd_report_dir() {
@@ -719,14 +773,17 @@ cmd_render() {
   mkdir -p "$outdir"
 
   # Pass 1: group metadata, and the slug -> title map the doc back-links need.
-  local -a g_slug=() g_tier=() g_coll=() g_title=() g_summary=()
-  local slug tier coll bt bs
-  while IFS=$'\t' read -r slug tier coll bt bs; do
+  local -a g_slug=() g_tier=() g_coll=() g_door=() g_title=() g_blast_scope=() g_blast_note=() g_summary=()
+  local slug tier coll door bt bscope bnote bs
+  while IFS=$'\t' read -r slug tier coll door bt bscope bnote bs; do
     [[ -n $slug ]] || continue
     g_slug+=("$slug")
     g_tier+=("$tier")
     g_coll+=("$coll")
+    g_door+=("$door")
     g_title+=("$(b64d "$bt")")
+    g_blast_scope+=("$([[ $bscope != - ]] && b64d "$bscope" || printf '')")
+    g_blast_note+=("$([[ $bnote != - ]] && b64d "$bnote" || printf '')")
     g_summary+=("$(b64d "$bs")")
   done < <(jq -r "$GROUPS_JQ" "$plan")
 
@@ -853,11 +910,22 @@ cmd_render() {
 
       printf '  <section class="group" id="group-%s">\n' "${g_slug[i]}"
       [[ ${g_coll[i]} == 1 ]] && printf '    <details>\n    <summary>\n'
-      printf '    <h2><span class="badge %s">%s</span> %s</h2>\n' \
-        "${g_tier[i]}" "$label" "$(esc "${g_title[i]}")"
+      # The door is a second badge, never a second sort key: importance alone
+      # placed this group, and a group with no door call gets no badge at all.
+      local door_badge=""
+      case "${g_door[i]}" in
+        one-way) door_badge=' <span class="badge door one-way">One-way</span>' ;;
+        two-way) door_badge=' <span class="badge door two-way">Two-way</span>' ;;
+      esac
+      printf '    <h2><span class="badge %s">%s</span>%s %s</h2>\n' \
+        "${g_tier[i]}" "$label" "$door_badge" "$(esc "${g_title[i]}")"
       [[ ${g_coll[i]} == 1 ]] && printf '    </summary>\n'
       [[ -n ${g_summary[i]} ]] &&
         printf '    <p class="group-summary">%s</p>\n' "$(esc "${g_summary[i]}")"
+      # Same "scope — note" shape bin/merge-danger writes into a Vendis PR body.
+      [[ -n ${g_blast_scope[i]} ]] &&
+        printf '    <p class="blast-radius">Blast radius: <strong>%s</strong> &mdash; %s</p>\n' \
+          "$(esc "${g_blast_scope[i]}")" "$(esc "${g_blast_note[i]}")"
 
       # Orientation before reasoning: what the topic is and what it fixes, then
       # one concrete instance of it. A group without a why still renders -- a

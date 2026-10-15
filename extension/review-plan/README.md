@@ -47,6 +47,8 @@ interface PlanGroup {
   title: string; // required, non-empty
   summary?: string;
   importance?: number; // 0-100, default 50 -- LOWER IS MORE IMPORTANT
+  door?: "one-way" | "two-way"; // does reverting undo it? writeup badge only, never a sort key
+  blastRadius?: { scope: string; note: string }; // scope is one word, e.g. "tenant"
   collapsed?: boolean; // start this group collapsed in the pane
   hidden?: boolean; // see "hidden groups" below
   files: PlanFileEntry[];

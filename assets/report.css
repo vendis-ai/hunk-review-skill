@@ -99,7 +99,13 @@ section.group > details > summary h2 { display: inline-flex; }
 .badge.critical { background: var(--crit-bg); border-color: var(--crit-border); color: var(--crit-text); }
 .badge.review { background: var(--rev-bg); border-color: var(--rev-border); color: var(--rev-text); }
 .badge.skim { background: var(--skim-bg); border-color: var(--skim-border); color: var(--skim-text); }
+/* The door badge stays out of the verdict palette, so it never reads as a
+   second verdict: one-way is solid ink, two-way a quiet outline. */
+.badge.door.one-way { background: var(--text); border-color: var(--text); color: var(--panel); }
+.badge.door.two-way { background: transparent; border-color: var(--muted); color: var(--muted); }
 .group-summary { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.6rem; }
+.blast-radius { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.6rem; }
+.blast-radius strong { color: var(--text); }
 .no-writeup { color: var(--muted); font-style: italic; font-size: 0.9rem; }
 
 /* Orientation blocks above a group's bullets. Inset on the group's own panel,

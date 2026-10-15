@@ -170,6 +170,20 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    under the group title, so it is often the only thing a reviewer reads before deciding whether
    to open the section at all.
 
+   Every group also gets a `door` and a `blastRadius`. Make both calls from the diff and the spec
+   alone, before you read any merge-danger verdict the repo keeps: `merge-danger.json` in the git
+   directory, `.github/merge-danger.yml`, or a PR body's Merge Danger section. The call is worth
+   something only as a second opinion, and one copied from the verdict adds nothing. `door` is
+   `one-way` when reverting the commit does not undo the change: data rewritten or deleted, a
+   message or payment sent, a stored format once the first record is written in it, a contract
+   other code now calls. Anything else is `two-way`. Be most suspicious of "two-way, small": a
+   rollback does not unsend an email, and a flagged rollout stays two-way only until the first
+   write lands in the new format. `blastRadius` is `{scope, note}`: `scope` is one word naming
+   who is hit if it goes wrong (`user`, `tenant`, `global`), and `note` is one sentence saying
+   how. Neither field moves a group; `importance` stays the only sort key. A one-way group rarely
+   belongs at Skim, so `hunk-plan write` warns when one sits there (importance 6 or more): raise
+   it, or say in the group's writeup why a skim is enough.
+
    **Group titles must be short noun phrases — two or three words, no dash or clause.** `hunk-plan
    sidecar` folds the group title into every file's summary as `"<title> — <note>"`, because
    hunk's native sidecar format has no concept of groups. A long title therefore repeats as a
@@ -210,9 +224,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    The out-of-repo path is the default for a reason — never write the plan into a client
    repository by default; `--in-repo` is opt-in and leaves an untracked file behind.
 
-   Schema: `{version:1, summary?, groups:[{title, summary?, importance?, collapsed?, hidden?,
-   files:[{path, importance?, note?, annotations?:[{summary, rationale?, newRange?, oldRange?,
-   tags?, confidence?}]}]}]}`. `summary` is required on every annotation. Ranges are 1-based
+   Schema: `{version:1, summary?, groups:[{title, summary?, importance?, door?,
+   blastRadius?:{scope, note}, collapsed?, hidden?, files:[{path, importance?, note?,
+   annotations?:[{summary, rationale?, newRange?, oldRange?, tags?, confidence?}]}]}]}`. `door`
+   is `"one-way"` or `"two-way"`. `summary` is required on every annotation. Ranges are 1-based
    positive ordered integer pairs. `hidden` only takes effect when `hide_groups = true` is set in
    config.
 
@@ -377,7 +392,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
    The verdict badge and whether a group starts collapsed are both derived from `importance`
    (1-2 → `Critical`, 3-5 → `Review`, 6+ → `Skim`, and `Skim` groups render closed) — so get
-   `importance` right in step 6 rather than trying to influence the badge here.
+   `importance` right in step 6 rather than trying to influence the badge here. The door badge
+   next to it and the blast-radius line under the summary come from the group's `door` and
+   `blastRadius` (step 6); a group without a door gets no second badge.
 
    A group whose reasoning file you leave empty renders with a visible "no writeup" marker and a
    warning on stderr; an empty `.why.md` or `_overview.md` warns on stderr alone, so read that

@@ -42,10 +42,19 @@ export interface PlanFileEntry {
   annotations?: PlanAnnotation[];
 }
 
+/** Who is hit if a group's change goes wrong. `scope` is one word ("tenant"), as Vendis's `--blast-scope` takes it. */
+export interface BlastRadius {
+  scope: string;
+  note: string;
+}
+
 export interface PlanGroup {
   title: string;
   summary?: string;
   importance?: number;
+  /** Whether reverting the commit undoes the change. Never a sort key: `importance` alone orders groups. */
+  door?: "one-way" | "two-way";
+  blastRadius?: BlastRadius;
   collapsed?: boolean;
   hidden?: boolean;
   files: PlanFileEntry[];
@@ -70,6 +79,16 @@ function clampImportance(value: unknown): number {
 }
 
 const CONFIDENCE_VALUES = new Set(["low", "medium", "high"]);
+const DOOR_VALUES = new Set(["one-way", "two-way"]);
+
+/** A `{scope, note}` whose scope is one word and whose note is non-empty, or null. */
+function validBlastRadius(value: unknown): BlastRadius | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const b = value as Record<string, unknown>;
+  if (typeof b.scope !== "string" || !/^\S+$/.test(b.scope)) return null;
+  if (typeof b.note !== "string" || b.note.trim() === "") return null;
+  return { scope: b.scope, note: b.note };
+}
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
@@ -231,6 +250,11 @@ export function validatePlan(input: unknown): ValidatePlanResult {
       files,
     };
     if (typeof g.summary === "string") group.summary = g.summary;
+    // Forgiven like an annotation's `confidence`: an unknown door or a malformed
+    // blast radius is dropped, never a reason to refuse the plan.
+    if (typeof g.door === "string" && DOOR_VALUES.has(g.door)) group.door = g.door as "one-way" | "two-way";
+    const blastRadius = validBlastRadius(g.blastRadius);
+    if (blastRadius) group.blastRadius = blastRadius;
     if (typeof g.collapsed === "boolean") group.collapsed = g.collapsed;
     if (typeof g.hidden === "boolean") group.hidden = g.hidden;
     groups.push(group);

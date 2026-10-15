@@ -140,8 +140,10 @@ cat >plan.json <<'JSON'
 { "version": 1,
   "groups": [
     { "title": "Security boundary", "summary": "Auth changes.", "importance": 1,
+      "door": "one-way",
+      "blastRadius": { "scope": "tenant", "note": "Every <partner> invite already sent." },
       "files": [{ "path": "a.rb" }] },
-    { "title": "Removal: Inputs", "importance": 4, "files": [{ "path": "b.rb" }] },
+    { "title": "Removal: Inputs", "importance": 4, "door": "two-way", "files": [{ "path": "b.rb" }] },
     { "title": "Dev tooling", "summary": "Churn.", "importance": 9,
       "files": [{ "path": "c.rb" }] }
   ] }
@@ -206,6 +208,15 @@ assert_in 'id="group-security-boundary"' "$OUT" "emits stable section ids"
 assert_in 'badge critical">Critical' "$OUT" "importance 1 -> Critical"
 assert_in 'badge review">Review' "$OUT" "importance 4 -> Review"
 assert_in 'badge skim">Skim' "$OUT" "importance 9 -> Skim"
+
+# The door is a second badge after the verdict; a group with no call gets none.
+assert_in 'badge critical">Critical</span> <span class="badge door one-way">One-way</span> Security boundary</h2>' \
+  "$OUT" "a one-way door is a second badge"
+assert_in '<span class="badge door two-way">Two-way</span> Removal: Inputs</h2>' "$OUT" "a two-way door is a second badge"
+assert_in 'badge skim">Skim</span> Dev tooling</h2>' "$OUT" "a group without a door gets no door badge"
+assert_in '<p class="blast-radius">Blast radius: <strong>tenant</strong> &mdash; Every &lt;partner&gt; invite already sent.</p>' \
+  "$OUT" "renders the blast radius, escaped"
+assert_eq "$(grep -c 'class="blast-radius"' "$OUT")" "1" "only a group with a blast radius gets the line"
 
 # Ordering must match the extension: [hidden, importance, declaration order].
 ORDER=$(grep -o 'id="group-[a-z-]*"' "$OUT" | tr '\n' ' ')
@@ -321,6 +332,38 @@ for f in _overview.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$TM
 OUTDIR=$(dirname "$OUT")
 [[ -f "$OUTDIR/marked.min.js" ]] && ok "copies marked alongside" || no "copies marked alongside"
 [[ -f "$OUTDIR/mermaid.min.js" ]] && ok "copies mermaid alongside" || no "copies mermaid alongside"
+
+echo
+echo "hunk-plan write: door checks"
+
+# A repo of its own, so these plans never replace the fixture's.
+DOORS="$TMP/doors"
+mkdir -p "$DOORS"
+git -C "$DOORS" init -q .
+# door_write <group json fields> -- writes a one-group plan, prints only stderr.
+door_write() {
+  (cd "$DOORS" && printf '{"version":1,"groups":[{"title":"Migration",%s"files":[{"path":"m.rb"}]}]}' "$1" |
+    run_plan write >/dev/null 2>"$TMP/door.err")
+  cat "$TMP/door.err"
+}
+
+ERR=$(door_write '"door":"one-way","importance":6,')
+assert_eq "$ERR" 'hunk-plan: group "Migration" is one-way but ranked Skim (importance 6); rank it 5 or lower, or say in the writeup why a skim is enough' \
+  "warns about a one-way group ranked Skim"
+(cd "$DOORS" && run_plan show | jq -e '.groups[0].door == "one-way"' >/dev/null) &&
+  ok "...and still writes the plan" || no "...and still writes the plan"
+assert_eq "$(door_write '"door":"one-way","importance":5,')" "" "a one-way group at Review is fine"
+assert_in 'is one-way but ranked Skim (importance 50)' <(door_write '"door":"one-way",') \
+  "a one-way group with no importance is at Skim (50)"
+assert_eq "$(door_write '"door":"two-way","importance":9,')" "" "a two-way group at Skim is fine"
+assert_in 'group "Migration" has door "oneway"; use "one-way" or "two-way"' <(door_write '"door":"oneway",') \
+  "warns about an unknown door"
+assert_in 'group "Migration" has a malformed blastRadius' \
+  <(door_write '"door":"two-way","blastRadius":{"scope":"two words","note":"x"},') \
+  "warns about a malformed blast radius"
+assert_eq "$(door_write '"door":"two-way","blastRadius":{"scope":"tenant","note":"x"},')" "" \
+  "a well-formed blast radius is fine"
+(cd "$DOORS" && run_plan clear --yes >/dev/null 2>&1)
 
 echo
 echo "hunk-plan gc"
