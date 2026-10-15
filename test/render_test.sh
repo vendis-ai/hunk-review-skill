@@ -366,6 +366,209 @@ assert_eq "$(door_write '"door":"two-way","blastRadius":{"scope":"tenant","note"
 (cd "$DOORS" && run_plan clear --yes >/dev/null 2>&1)
 
 echo
+echo "hunk-plan danger"
+
+# A repo of its own, with a stand-in for Vendis's bin/merge-danger that answers
+# only what hunk-plan asks. MD_CHECK picks the --check outcome, MD_DIGEST and
+# MD_DIGEST_COMMITTED the content digests, MD_FLOOR the fresh floor's file.
+DANGER="$TMP/danger"
+mkdir -p "$DANGER/bin"
+git -C "$DANGER" init -q .
+DGITDIR=$(git -C "$DANGER" rev-parse --absolute-git-dir)
+export MD_FLOOR="$TMP/floor.json"
+cat >"$TMP/merge-danger" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  --check)
+    case ${MD_CHECK:-current} in
+      current) echo "verdict current: two-way / critical" ;;
+      stale)
+        echo "merge-danger: verdict stale: the content changed since it was recorded; run bin/merge-danger, then bin/merge-danger --finalize --by agent with your judgement flags" >&2
+        exit 1
+        ;;
+      *)
+        echo "merge-danger: internal error: boom" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  "--floor --stdout --committed") cat "$MD_FLOOR" ;;
+  --digest) echo "base0 ${MD_DIGEST:-d1}" ;;
+  "--digest --committed") echo "base0 ${MD_DIGEST_COMMITTED:-d1}" ;;
+  *)
+    echo "merge-danger: unexpected arguments: $*" >&2
+    exit 2
+    ;;
+esac
+SH
+chmod +x "$TMP/merge-danger"
+
+# The verdict: two-way / critical, the floor set by one class whose files sit
+# in a Review group and outside the plan.
+cat >"$TMP/verdict.json" <<'JSON'
+{ "version": 1, "digest": "d1", "door": "two-way", "depth": "critical",
+  "blastRadius": { "scope": "harness", "note": "Every later <PR> body." },
+  "oneWayReasons": [], "overrides": [], "finalized": { "by": "agent", "at": "2026-10-15T00:00:00Z" },
+  "floor": { "door": "two-way", "depth": "critical",
+    "classes": [ { "id": "harness-controls", "door": "two-way", "depth": "critical",
+                   "files": ["bin/x", "ci.yml", "zz.rb"], "signals": [] } ] } }
+JSON
+jq '.digest = "d1" | .finalized = null' "$TMP/verdict.json" >"$MD_FLOOR"
+
+# danger_plan <plan json> -- stores a plan in the danger repo.
+danger_plan() { (cd "$DANGER" && printf '%s' "$1" | run_plan write >/dev/null 2>&1); }
+# danger_run -- runs `danger`; stdout, stderr and the exit code land in files.
+danger_run() {
+  (cd "$DANGER" && run_plan danger >"$TMP/danger.out" 2>"$TMP/danger.err")
+  echo $? >"$TMP/danger.rc"
+}
+row() { jq -c "[.disagreements[] | select($1)] | length" "$TMP/danger.out"; }
+
+PLAN_DOORS='{"version":1,"groups":[
+  {"title":"Security boundary","importance":1,"door":"one-way","files":[{"path":"a.rb"}]},
+  {"title":"Harness","importance":4,"door":"two-way","files":[{"path":"bin/x"},{"path":"ci.yml"}]},
+  {"title":"Dev tooling","importance":9,"files":[{"path":"c.rb"}]}]}'
+danger_plan "$PLAN_DOORS"
+
+danger_run
+assert_eq "$(cat "$TMP/danger.rc")" "0" "no bin/merge-danger: exits 0"
+assert_eq "$(cat "$TMP/danger.out")" "" "...prints no object"
+assert_in 'no bin/merge-danger in this repo; nothing to cross-check' "$TMP/danger.err" "...and says so"
+
+cp "$TMP/merge-danger" "$DANGER/bin/merge-danger"
+cp "$TMP/verdict.json" "$DGITDIR/merge-danger.json"
+
+danger_run
+assert_eq "$(cat "$TMP/danger.rc")" "0" "a current verdict: exits 0"
+assert_eq "$(jq -r '[.source, .status, .door, .depth, .finalized, .digest] | join(" ")' "$TMP/danger.out")" \
+  "verdict verdict current: two-way / critical two-way critical true d1" "...reads the stored verdict"
+assert_eq "$(jq -c '.review' "$TMP/danger.out")" '{"door":"one-way","depth":"critical"}' \
+  "...and the review calls: any one-way group, the top group tier"
+assert_eq "$(row '.field == "door" and .class == null and .group == "Security boundary" and .needs == "review"')" "1" \
+  "a one-way group against a two-way verdict is a raise, named by its group"
+assert_eq "$(row '.field == "depth" and .group == "Harness" and .class == "harness-controls" and .review == "review" and .needs == "operator"')" "1" \
+  "a class file in a group ranked below the class depth needs the operator"
+assert_eq "$(row '.group == null and .class == "harness-controls" and .files == ["zz.rb"] and .review == "skim"')" "1" \
+  "a class file outside the plan counts as Skim"
+assert_eq "$(jq '.disagreements | length' "$TMP/danger.out")" "3" "...and nothing else disagrees"
+assert_eq "$(jq '[.disagreements[].reason] | unique' -c "$TMP/danger.out")" '[""]' "every reason is left for the review"
+assert_in '3 disagreement(s); write each "reason"' "$TMP/danger.err" "says what to do next"
+
+# The whole-change depth row is left out when the class rows already explain a
+# floor-set verdict, and kept when the verdict sits above the floor.
+danger_plan "$(printf '%s' "$PLAN_DOORS" | jq -c '.groups[0].importance = 3')"
+danger_run
+assert_eq "$(row '.field == "depth" and .class == null')" "0" "class rows replace a whole-change row they explain"
+jq '.floor.depth = "review" | .floor.classes[0].depth = "review"' "$TMP/verdict.json" >"$DGITDIR/merge-danger.json"
+danger_run
+assert_eq "$(row '.field == "depth" and .class == null and .group == null and .verdict == "critical" and .review == "review"')" "1" \
+  "a verdict raised above the floor keeps its whole-change row"
+cp "$TMP/verdict.json" "$DGITDIR/merge-danger.json"
+danger_plan "$PLAN_DOORS"
+
+MD_CHECK=stale danger_run
+assert_eq "$(cat "$TMP/danger.rc")" "0" "a stale verdict: exits 0"
+assert_eq "$(jq -r '[.source, .status, .finalized] | join(" | ")' "$TMP/danger.out")" \
+  "floor | verdict stale: the content changed since it was recorded | false" "...and reads a fresh floor instead"
+
+MD_CHECK=broken danger_run
+assert_eq "$(cat "$TMP/danger.rc")" "0" "a failing bin/merge-danger: exits 0"
+assert_eq "$(cat "$TMP/danger.out")" "" "...prints no object"
+assert_in 'bin/merge-danger --check failed (exit 2): internal error: boom; no cross-check' "$TMP/danger.err" "...and says why"
+
+danger_plan "$(printf '%s' "$PLAN_DOORS" | jq -c 'del(.groups[].door)')"
+danger_run
+assert_in 'no group has a door call, so the door was not compared' "$TMP/danger.err" "says when the plan has no door calls"
+assert_eq "$(row '.field == "door"')" "0" "...and compares no door"
+
+echo
+echo "hunk-plan write: mergeDanger checks"
+
+danger_plan "$PLAN_DOORS"
+danger_run
+MD=$(cat "$TMP/danger.out")
+# danger_write <jq filter on the plan with mergeDanger> -- prints only stderr.
+danger_write() {
+  (cd "$DANGER" && printf '%s' "$PLAN_DOORS" | jq --argjson md "$MD" ".mergeDanger = \$md | $1" |
+    run_plan write >/dev/null 2>"$TMP/dwrite.err")
+  cat "$TMP/dwrite.err"
+}
+assert_in 'mergeDanger disagreement on door (Security boundary) has no reason; say why this review differs' \
+  <(danger_write '.') "warns about a disagreement with no reason"
+REASONED='.mergeDanger.disagreements |= map(.reason = "Sent <invites> stay sent.")'
+assert_eq "$(danger_write "$REASONED")" "" "a reason on every row is fine"
+assert_in 'mergeDanger was made for other group calls; run hunk-plan danger again' \
+  <(danger_write "$REASONED | .groups[0].importance = 3") "warns when the groups changed after danger ran"
+assert_in 'names a group the plan does not have' \
+  <(danger_write "$REASONED | .mergeDanger.disagreements[0].group = \"Ghost\"") "warns about an unknown group"
+assert_in 'mergeDanger disagreement 2 is malformed' \
+  <(danger_write "$REASONED | .mergeDanger.disagreements[1].verdict = \"high\"") "warns about a malformed row"
+assert_in 'mergeDanger is malformed; the writeup leaves it out' <(danger_write '.mergeDanger = []') \
+  "warns about a malformed mergeDanger"
+(cd "$DANGER" && run_plan show | jq -e '.mergeDanger == []' >/dev/null) &&
+  ok "...and still writes the plan" || no "...and still writes the plan"
+
+echo
+echo "hunk-plan render: merge danger and the review record"
+
+danger_write "$REASONED" >/dev/null
+DDIR=$(cd "$DANGER" && run_plan report-dir --init 2>/dev/null)
+printf '{"title":"Danger Review","subtitle":"","docs":[]}\n' >"$DDIR/meta.json"
+danger_render() {
+  (cd "$DANGER" && run_plan render 2>"$TMP/drender.err" | sed 's/^hunk-plan: wrote //')
+}
+DOUT=$(danger_render)
+assert_in '<div class="tldr"><h3>TL;DR</h3><div class="danger">' "$DOUT" \
+  "the TL;DR leads with the cross-check, even with an empty _tldr.md"
+assert_in 'Merge danger: <strong>two-way / critical</strong> <span class="danger-src">(current verdict)</span>' "$DOUT" \
+  "shows the verdict and where it came from"
+assert_in '<p class="blast-radius">Blast radius: <strong>harness</strong> &mdash; Every later &lt;PR&gt; body.</p>' "$DOUT" \
+  "shows the verdict blast radius, escaped"
+assert_in '<strong>Door</strong>: the verdict says Two-way, this review says One-way (<a href="#group-security-boundary">Security boundary</a>). Sent &lt;invites&gt; stay sent. <span class="badge needs-note">Confirm in a note to raise</span>' \
+  "$DOUT" "a raise links its group, gives the reason escaped, and needs a note"
+assert_in '(<a href="#group-harness">Harness</a>, class <code>harness-controls</code>).' "$DOUT" "a class row names its class"
+assert_in '(files outside the plan, class <code>harness-controls</code>)' "$DOUT" "a row for files outside the plan says so"
+assert_eq "$(grep -o 'Operator lowering needed' "$DOUT" | wc -l | tr -d ' ')" "2" "each lower needs the operator"
+assert_not_in 'for earlier content' "$DOUT" "a verdict for this content is not labelled stale"
+
+MD_DIGEST=d2 danger_render >/dev/null
+assert_in '(current verdict; for earlier content)' "$DOUT" "a verdict for other content is labelled, not dropped"
+
+(cd "$DANGER" && run_plan show | jq '.mergeDanger.disagreements = []' | run_plan write >/dev/null 2>&1)
+danger_render >/dev/null
+assert_in '<p class="danger-agree">This review agrees with the verdict.</p>' "$DOUT" "says when the review agrees"
+
+cat >"$DGITDIR/review-record.json" <<'JSON'
+{ "digest": "d1",
+  "polish": { "base": "b0", "batch": [
+    { "rule": "STD-FIXED-1", "file": "a.rb", "line": 3, "disposition": "fixed" },
+    { "rule": "STD-HELD-1", "file": "a.rb", "line": 12, "disposition": "held" },
+    { "rule": "STD-WAIVED-1", "file": "ci.yml", "line": null, "disposition": "waived" },
+    { "rule": "STD-<REJ>-1", "file": "bin/x", "line": 7, "disposition": "rejected" } ] },
+  "gate": { "treeDigest": "t0" },
+  "acceptedKnown": ["a wording nit <kept> (a.rb:1)"] }
+JSON
+danger_render >/dev/null
+assert_in '<div class="held"><h4>Held for you</h4><ul><li><code>STD-HELD-1</code> <code>a.rb:12</code></li></ul></div></div>' \
+  "$DOUT" "held items close the TL;DR"
+assert_in '<details class="settled"><summary>Settled by review (3)</summary>' "$DOUT" "settled items sit in a closed block"
+assert_in '<li><strong>Rejected</strong> <code>STD-&lt;REJ&gt;-1</code> <code>bin/x:7</code></li>' "$DOUT" "...escaped"
+assert_in '<li><strong>Waived</strong> <code>STD-WAIVED-1</code> <code>ci.yml</code></li>' "$DOUT" "...a row with no line shows its file"
+assert_in '<li><strong>Accepted as known</strong> a wording nit &lt;kept&gt; (a.rb:1)</li>' "$DOUT" "...and the accepted findings"
+assert_not_in 'STD-FIXED-1' "$DOUT" "fixed items never appear"
+
+MD_DIGEST=d2 danger_render >/dev/null
+assert_not_in 'Held for you' "$DOUT" "a record for other content is left out"
+assert_in 'review-record.json describes other content; left it out' "$TMP/drender.err" "...and stderr says so"
+
+chmod -x "$DANGER/bin/merge-danger"
+danger_render >/dev/null
+assert_not_in 'Settled by review' "$DOUT" "a record no tool can date is left out"
+assert_in 'cannot tell which content' "$TMP/drender.err" "...and stderr says so"
+assert_in 'This review agrees with the verdict.' "$DOUT" "...while the plan's own mergeDanger still renders"
+(cd "$DANGER" && run_plan clear --yes >/dev/null 2>&1)
+
+echo
 echo "hunk-plan gc"
 
 STATE="$XDG_STATE_HOME/hunk/review-plan"

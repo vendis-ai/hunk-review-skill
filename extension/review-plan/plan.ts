@@ -60,6 +60,44 @@ export interface PlanGroup {
   files: PlanFileEntry[];
 }
 
+type Door = "one-way" | "two-way";
+type Depth = "skim" | "review" | "critical";
+
+/** One place the review and a merge-danger verdict differ. `hunk-plan danger` writes every field but `reason`. */
+export interface MergeDangerDisagreement {
+  field: "door" | "depth";
+  /** The verdict's value; for a class row, the class's own. */
+  verdict: string;
+  review: string;
+  /** The group whose call differs; null for the whole change or for files outside the plan. */
+  group: string | null;
+  /** The merge-danger class the row comes from; null for the whole change. */
+  class: string | null;
+  files?: string[];
+  needs?: "review" | "operator";
+  reason: string;
+}
+
+/**
+ * The cross-check against a repo's merge-danger verdict (Vendis's
+ * `bin/merge-danger`), as `hunk-plan danger` prints it. The writeup shows it;
+ * the TUI does not, and nothing here ever orders a group.
+ */
+export interface MergeDanger {
+  /** "verdict" when the stored verdict was current, "floor" when a fresh floor stood in for it. */
+  source: "verdict" | "floor";
+  status?: string;
+  digest?: string;
+  door: Door;
+  depth: Depth;
+  finalized?: boolean;
+  blastRadius?: BlastRadius;
+  oneWayReasons?: string[];
+  /** The review's own calls when `danger` ran, so a later group change can be noticed. */
+  review?: { door: Door | null; depth: Depth | null };
+  disagreements: MergeDangerDisagreement[];
+}
+
 export interface ReviewPlan {
   version: 1;
   /** Stamped by `hunk-plan write`, fresh on every write; never authored. Ties review-loop hand-offs to this plan. */
@@ -67,6 +105,7 @@ export interface ReviewPlan {
   generatedAt?: string;
   label?: string;
   summary?: string; // one-line thesis for the whole changeset
+  mergeDanger?: MergeDanger;
   groups: PlanGroup[];
 }
 
@@ -88,6 +127,64 @@ function validBlastRadius(value: unknown): BlastRadius | null {
   if (typeof b.scope !== "string" || !/^\S+$/.test(b.scope)) return null;
   if (typeof b.note !== "string" || b.note.trim() === "") return null;
   return { scope: b.scope, note: b.note };
+}
+
+const RANKS = { door: ["two-way", "one-way"], depth: ["skim", "review", "critical"] } as const;
+
+function isRank(field: "door" | "depth", value: unknown): boolean {
+  return typeof value === "string" && (RANKS[field] as readonly string[]).includes(value);
+}
+
+function validDisagreement(value: unknown): MergeDangerDisagreement | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const d = value as Record<string, unknown>;
+  if (d.field !== "door" && d.field !== "depth") return null;
+  if (!isRank(d.field, d.verdict) || !isRank(d.field, d.review)) return null;
+  const row: MergeDangerDisagreement = {
+    field: d.field,
+    verdict: d.verdict as string,
+    review: d.review as string,
+    group: typeof d.group === "string" ? d.group : null,
+    class: typeof d.class === "string" ? d.class : null,
+    reason: typeof d.reason === "string" ? d.reason : "",
+  };
+  if (Array.isArray(d.files)) row.files = d.files.filter((f): f is string => typeof f === "string");
+  if (d.needs === "review" || d.needs === "operator") row.needs = d.needs;
+  return row;
+}
+
+/**
+ * Forgiving like a group's door: a mergeDanger without a valid door and depth
+ * is dropped whole, a malformed disagreement is dropped alone, and a bad
+ * optional field is left out. `hunk-plan write` warns about each.
+ */
+function validMergeDanger(value: unknown): MergeDanger | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const m = value as Record<string, unknown>;
+  if (!isRank("door", m.door) || !isRank("depth", m.depth)) return null;
+  const rows = Array.isArray(m.disagreements) ? m.disagreements : [];
+  const md: MergeDanger = {
+    source: m.source === "floor" ? "floor" : "verdict",
+    door: m.door as Door,
+    depth: m.depth as Depth,
+    disagreements: rows.flatMap((row) => validDisagreement(row) ?? []),
+  };
+  if (typeof m.status === "string") md.status = m.status;
+  if (typeof m.digest === "string") md.digest = m.digest;
+  if (typeof m.finalized === "boolean") md.finalized = m.finalized;
+  const blastRadius = validBlastRadius(m.blastRadius);
+  if (blastRadius) md.blastRadius = blastRadius;
+  if (Array.isArray(m.oneWayReasons)) {
+    md.oneWayReasons = m.oneWayReasons.filter((r): r is string => typeof r === "string");
+  }
+  if (typeof m.review === "object" && m.review !== null && !Array.isArray(m.review)) {
+    const r = m.review as Record<string, unknown>;
+    md.review = {
+      door: isRank("door", r.door) ? (r.door as Door) : null,
+      depth: isRank("depth", r.depth) ? (r.depth as Depth) : null,
+    };
+  }
+  return md;
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -265,6 +362,8 @@ export function validatePlan(input: unknown): ValidatePlanResult {
   if (typeof raw.generatedAt === "string") plan.generatedAt = raw.generatedAt;
   if (typeof raw.label === "string") plan.label = raw.label;
   if (typeof raw.summary === "string") plan.summary = raw.summary;
+  const mergeDanger = validMergeDanger(raw.mergeDanger);
+  if (mergeDanger) plan.mergeDanger = mergeDanger;
 
   return { ok: true, plan, droppedDuplicates };
 }

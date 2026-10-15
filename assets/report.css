@@ -75,17 +75,30 @@ article.doc .md h4, article.doc .md h5, article.doc .md h6 { scroll-margin-top: 
 @media (prefers-reduced-motion: reduce) { .anchor-flash { animation: none; } }
 
 /* ── review pane ──────────────────────────────────────────────────────────── */
-/* Front matter: the overview (what and why), the TL;DR (where to look) and the
-   glossary. The gap lives on the wrapper, so any of the three can be absent. */
+/* Front matter: the overview (what and why), the TL;DR (where to look), what
+   the review record settled, and the glossary. The gap lives on the wrapper,
+   so any of them can be absent. */
 .front { display: flex; flex-direction: column; gap: 0.9rem; margin-bottom: 1.75rem; }
 .overview, .tldr { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; }
 .overview { border-left: 3px solid var(--accent); }
 .overview h3, .tldr h3 { margin-top: 0; }
 .overview ul, .tldr ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 .overview li, .tldr li { margin: 0.35rem 0; }
-details.glossary { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1.25rem; }
-details.glossary > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-details.glossary > summary:hover { color: var(--text); }
+/* The TL;DR opens with the merge-danger cross-check and closes with what the
+   review record held for a person; both sit apart from the authored bullets. */
+.danger { margin-bottom: 0.7rem; padding-bottom: 0.6rem; border-bottom: 1px dashed var(--border); }
+.danger p { margin: 0 0 0.35rem; }
+.danger-src { color: var(--muted); font-size: 0.85rem; }
+.danger-reasons, .danger-agree { color: var(--muted); font-size: 0.9rem; }
+.badge.needs-operator { background: var(--crit-bg); border-color: var(--crit-border); color: var(--crit-text); }
+.badge.needs-note { background: transparent; border-color: var(--muted); color: var(--muted); }
+.held { margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
+.held h4 { margin: 0; color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+details.glossary, details.settled { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 1.25rem; }
+details.glossary > summary, details.settled > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+details.glossary > summary:hover, details.settled > summary:hover { color: var(--text); }
+details.settled ul { margin: 0.5rem 0 0.2rem; padding-left: 1.2rem; }
+details.settled li { margin: 0.25rem 0; }
 details.glossary .md ul { margin: 0.5rem 0 0.2rem; padding-left: 1.2rem; }
 details.glossary .md li { margin: 0.25rem 0; }
 nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 2rem; }

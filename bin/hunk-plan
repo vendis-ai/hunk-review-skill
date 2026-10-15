@@ -37,8 +37,10 @@ Commands:
                         stamps a fresh "planId" into the stored plan, which
                         ties review-loop hand-offs to it (see wait). Warns on
                         stderr, after writing, about a one-way group ranked
-                        Skim, an unknown "door" value and a malformed
-                        "blastRadius".
+                        Skim, an unknown "door" value, a malformed
+                        "blastRadius", and a "mergeDanger" that is malformed,
+                        out of date with the groups, or has a disagreement
+                        with no reason.
   show                  Print the resolved plan (checks HUNK_REVIEW_PLAN, then
                         the in-repo path, then the state-dir path -- same
                         order plan.ts uses) or exit 1 naming what was checked.
@@ -66,9 +68,13 @@ Commands:
                         copy the marked/mermaid assets alongside it. The frame,
                         nav, table of contents, section ids, verdict badges and
                         link rules are all derived here; only the body prose
-                        comes from the report directory. Sentences over 25
-                        words and an oversized glossary are reported on
-                        stderr; they never stop the render.
+                        comes from the report directory. A plan "mergeDanger"
+                        leads the TL;DR. With bin/merge-danger, a review
+                        record for the current content (review-record.json
+                        in the git dir) adds the items held for you under the
+                        TL;DR and a closed block of the settled ones.
+                        Sentences over 25 words and an oversized glossary are
+                        reported on stderr; they never stop the render.
                         A meta.json "docs" entry takes either "path" (repo-
                         relative, absolute or ~-prefixed; converted according to
                         its extension) or "url" (an external nav link, never
@@ -97,6 +103,15 @@ Commands:
                         snapshot no longer holds was deleted. Snapshots are
                         taken when one of the extension's keys (S, A, V, X, <,
                         >) runs, so an agent reply shows only once one has.
+  danger [--in-repo]    Cross-check the plan's door calls against the repo's
+                        merge-danger verdict, when the repo has an executable
+                        bin/merge-danger (Vendis). Uses the stored verdict
+                        when `bin/merge-danger --check` calls it current, and
+                        a fresh floor (--floor --stdout --committed) when not.
+                        Prints a "mergeDanger" object for the plan, with each
+                        disagreement's "reason" left for the review to write.
+                        A second opinion, never a gate: with no tool, or when
+                        the tool fails, it says so on stderr and exits 0.
   wait [--timeout <seconds>]
                         Block until the reviewer hands the review back from
                         Hunk ("Send review to agent", S) or approves it
@@ -260,7 +275,7 @@ cmd_write() {
   local warning
   while IFS= read -r warning; do
     if [[ -n $warning ]]; then echo "$PROG: $warning" >&2; fi
-  done < <(jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null)
+  done < <(jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null; jq -r "$DANGER_WARNINGS_JQ" "$target" 2>/dev/null)
 
   # Never delete as a side effect of a write -- just say when the drawer is
   # full. Removal stays an explicit `gc`.
@@ -536,7 +551,7 @@ html_escape() {
 }
 esc() { printf '%s' "$1" | html_escape; }
 
-# Must stay byte-identical to the jq slug rule in GROUPS_JQ below.
+# Must stay byte-identical to the jq slug rule (slug_of in GROUP_JQ_DEFS below).
 slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
     sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
@@ -643,6 +658,7 @@ GROUP_JQ_DEFS='
     then (.importance | if . < 0 then 0 elif . > 100 then 100 else . end)
     else 50 end;
   def tier_of: if . <= 2 then "critical" elif . <= 5 then "review" else "skim" end;
+  def slug_of: ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+"; "") | gsub("-+$"; "");
   def door_of: if .door == "one-way" or .door == "two-way" then .door else null end;
   def blast_of:
     .blastRadius as $b
@@ -676,8 +692,7 @@ GROUPS_JQ="$GROUP_JQ_DEFS"'
   | sort_by([ (if .hidden then 1 else 0 end), .imp, .order ])
   | .[]
   | . as $g
-  | ($g.title | ascii_downcase | gsub("[^a-z0-9]+"; "-")
-              | gsub("^-+"; "") | gsub("-+$"; "")) as $slug
+  | ($g.title | slug_of) as $slug
   | ($g.imp | tier_of) as $tier
   | [ $slug, $tier,
       (if ($g.collapsed or $tier == "skim") then "1" else "0" end),
@@ -707,6 +722,258 @@ DOOR_WARNINGS_JQ="$GROUP_JQ_DEFS"'
       then "group \"\($t)\" is one-way but ranked Skim (importance \(importance_of)); rank it 5 or lower, or say in the writeup why a skim is enough"
       else empty end )
 '
+
+# ── merge danger ─────────────────────────────────────────────────────────────
+#
+# A second opinion, never a gate. Vendis keeps a merge-danger verdict for the
+# change, and its bin/merge-danger owns it: `danger` calls that tool and never
+# recomputes what it computes (two of its detectors read file contents, so its
+# class globs are not ours to re-apply). The review makes its door calls first,
+# from the diff alone; `danger` then sets them next to the verdict. Every way
+# the cross-check itself can fail ends the same: a note on stderr, exit 0, and
+# a review without it.
+
+# Shared by `danger`, `write` and `render`: door and depth ranks, and what the
+# review says for the whole change. The door is one-way if any group is, the
+# depth is the top group tier, and either is null where the plan made no call.
+DANGER_JQ_DEFS="$GROUP_JQ_DEFS"'
+  def ranks($f): if $f == "door" then ["two-way", "one-way"] else ["skim", "review", "critical"] end;
+  def rank_of($f; $x): if ($x | type) == "string" then ranks($f) | index($x) else null end;
+  def below($f; $a; $b): rank_of($f; $a) < rank_of($f; $b);
+  def ranked_groups:
+    [ (.groups // [])[] | select(type == "object") ]
+    | to_entries
+    | map(.value + {order: .key, imp: (.value | importance_of)}
+          | . + {tier: (.imp | tier_of), call: door_of})
+    | sort_by([ (if .hidden == true then 1 else 0 end), .imp, .order ]);
+  def review_calls:
+    ranked_groups as $g
+    | { door: (if any($g[]; .call == "one-way") then "one-way"
+               elif any($g[]; .call == "two-way") then "two-way" else null end),
+        depth: ($g[0].tier // null) };
+  def valid_row:
+    type == "object" and (.field == "door" or .field == "depth")
+    and rank_of(.field; .verdict) != null and rank_of(.field; .review) != null;
+'
+
+# The verdict on stdin, the plan in $plan: a mergeDanger object for the plan,
+# reasons left blank for the review to write. Two kinds of disagreement:
+#   - whole change: the verdict door or depth against the review calls. The
+#     group is the one that sets a higher review call, and null otherwise.
+#   - class: a group holding a fired class file but ranked below that class
+#     depth, or called two-way where the class is one-way. A file outside the
+#     plan counts as Skim with no door call.
+# A whole-change row that only restates the class rows (the verdict sits at the
+# floor, and a class row at that value exists) is left out. A lower needs the
+# operator; a raise needs only the reviewer to confirm it.
+DANGER_JQ="$DANGER_JQ_DEFS"'
+  . as $v
+  | ($plan[0] | ranked_groups) as $groups
+  | ($plan[0] | review_calls) as $review
+  | { door: ([ $groups[] | select(.call == "one-way") ][0].title // null),
+      depth: ($groups[0].title // null) } as $decider
+  | [ ($v.floor.classes // [])[] as $c
+      | [ ($c.files // [])[] as $f
+          | {file: $f, g: ([ $groups[] | select(any(.files[]?; .path == $f)) ][0])} ]
+      | group_by(.g.order // 1e9) | .[]
+      | .[0].g as $g
+      | map(.file) as $files
+      | ( ($g.tier // "skim") as $t
+          | select(below("depth"; $t; $c.depth))
+          | {field: "depth", verdict: $c.depth, review: $t, group: ($g.title // null), class: $c.id, files: $files} ),
+        ( select($c.door == "one-way" and $g.call == "two-way")
+          | {field: "door", verdict: "one-way", review: "two-way", group: $g.title, class: $c.id, files: $files} )
+    ] as $classRows
+  | [ ("door", "depth") as $f
+      | select($review[$f] != null and $review[$f] != $v[$f])
+      | {field: $f, verdict: $v[$f], review: $review[$f],
+         group: (if below($f; $v[$f]; $review[$f]) then $decider[$f] else null end), class: null}
+      | select((.group == null and .verdict == $v.floor[$f]
+                and any($classRows[]; .field == $f and .verdict == $v[$f])) | not)
+    ] as $wholeRows
+  | { source: $source, status: $status, digest: ($v.digest // null),
+      door: $v.door, depth: $v.depth, finalized: ($v.finalized != null),
+      blastRadius: ($v.blastRadius // null), oneWayReasons: ($v.oneWayReasons // []),
+      review: $review,
+      disagreements: [ ($wholeRows + $classRows)[]
+        | . + {needs: (if below(.field; .review; .verdict) then "operator" else "review" end), reason: ""} ] }
+'
+
+# Advice on a plan mergeDanger, one line per finding; like the door warnings,
+# printed after the plan is written. A stale review entry means the groups
+# changed after `danger` ran, so its rows describe calls the plan no longer makes.
+DANGER_WARNINGS_JQ="$DANGER_JQ_DEFS"'
+  select(has("mergeDanger"))
+  | review_calls as $now
+  | [ .groups[]? | select(type == "object") | .title ] as $titles
+  | .mergeDanger as $m
+  | if ($m | type) != "object" or rank_of("door"; $m.door) == null or rank_of("depth"; $m.depth) == null
+    then "mergeDanger is malformed; the writeup leaves it out. Use the object hunk-plan danger prints"
+    else
+      ( if ($m.review | type) == "object" and ($m.review.door != $now.door or $m.review.depth != $now.depth)
+        then "mergeDanger was made for other group calls; run hunk-plan danger again and copy the reasons over"
+        else empty end ),
+      ( ($m.disagreements // []) | if type == "array" then to_entries[] else empty end
+        | .key as $i | .value as $r
+        | if ($r | valid_row | not)
+          then "mergeDanger disagreement \($i + 1) is malformed; the writeup leaves it out"
+          else
+            ( ($r.field + (if $r.group then " (\($r.group))" else "" end)) as $what
+              | ( if ($r.reason | type) != "string" or ($r.reason | test("\\S") | not)
+                  then "mergeDanger disagreement on \($what) has no reason; say why this review differs"
+                  else empty end ),
+                ( if $r.group != null and ($titles | index([$r.group]) | not)
+                  then "mergeDanger disagreement on \($what) names a group the plan does not have"
+                  else empty end ) )
+          end )
+    end
+'
+
+# The plan mergeDanger as an HTML block for the top of the TL;DR, or nothing
+# when it is absent or malformed. $stale is "1" when the content changed since
+# the verdict was read. Each row says what settling it takes, from the values
+# themselves: a lower needs the operator, a raise needs a confirming note.
+DANGER_HTML_JQ="$DANGER_JQ_DEFS"'
+  .mergeDanger as $m
+  | [ .groups[]? | select(type == "object") | .title ] as $titles
+  | select(($m | type) == "object" and rank_of("door"; $m.door) != null and rank_of("depth"; $m.depth) != null)
+  | def shown: {"one-way": "One-way", "two-way": "Two-way", critical: "Critical", review: "Review", skim: "Skim"}[.];
+    def link($t): if ($titles | index([$t])) then "<a href=\"#group-\($t | slug_of)\">\($t | @html)</a>" else ($t | @html) end;
+    def row:
+      . as $r
+      | ( [ (if $r.group != null then link($r.group) elif $r.class != null then "files outside the plan" else empty end),
+            (if ($r.class | type) == "string" then @html "class <code>\($r.class)</code>" else empty end) ]
+          | join(", ") ) as $ctx
+      | "<li><strong>\(if $r.field == "door" then "Door" else "Depth" end)</strong>: "
+        + @html "the verdict says \($r.verdict | shown), this review says \($r.review | shown)"
+        + (if $ctx != "" then " (\($ctx))" else "" end) + "."
+        + (if ($r.reason | type) == "string" and ($r.reason | test("\\S")) then " " + ($r.reason | @html) else "" end)
+        + (if below($r.field; $r.review; $r.verdict)
+           then " <span class=\"badge needs-operator\">Operator lowering needed</span>"
+           else " <span class=\"badge needs-note\">Confirm in a note to raise</span>" end)
+        + "</li>";
+    [ ($m.disagreements // []) | if type == "array" then .[] else empty end | select(valid_row) ] as $rows
+  | ( if $m.source == "floor" then "fresh floor; " + (($m.status // "") | if test("\\S") then . else "no current verdict" end)
+      elif $m.finalized == false then "current verdict, not finalized"
+      else "current verdict" end
+      + (if $stale == "1" then "; for earlier content" else "" end) ) as $src
+  | "<div class=\"danger\">"
+    + @html "<p class=\"danger-verdict\">Merge danger: <strong>\($m.door) / \($m.depth)</strong> <span class=\"danger-src\">(\($src))</span></p>"
+    + ( $m.blastRadius
+        | if type == "object" and (.scope | type) == "string" and (.note | type) == "string"
+          then @html "<p class=\"blast-radius\">Blast radius: <strong>\(.scope)</strong> &mdash; \(.note)</p>"
+          else "" end )
+    + ( [ ($m.oneWayReasons // []) | if type == "array" then .[] | strings else empty end ]
+        | if $m.door == "one-way" and length > 0
+          then "<p class=\"danger-reasons\">One-way because: " + (map(@html) | join("; ")) + "</p>"
+          else "" end )
+    + ( if ($rows | length) == 0
+        then "<p class=\"danger-agree\">This review agrees with the verdict.</p>"
+        else "<ul class=\"disagreements\">" + ($rows | map(row) | join("")) + "</ul>" end )
+    + "</div>"
+'
+
+# What the review record (bin/merge-danger --record-review) settled. Items
+# still held go under the TL;DR, because a person decides them; waived and
+# rejected ones, and findings the gate accepted as known, go in a closed block.
+# Fixed items never show: the review already closed them.
+RECORD_JQ_DEFS='
+  def where: [ (.file // empty | strings), (.line // empty | tostring) ] | join(":");
+  def batch($d): [ .polish.batch? // [] | if type == "array" then .[] else empty end
+                   | select(type == "object" and .disposition == $d) ];
+'
+RECORD_HELD_JQ="$RECORD_JQ_DEFS"'
+  batch("held")
+  | select(length > 0)
+  | "<div class=\"held\"><h4>Held for you</h4><ul>"
+    + (map(@html "<li><code>\(.rule // "")</code> <code>\(where)</code></li>") | join(""))
+    + "</ul></div>"
+'
+RECORD_SETTLED_JQ="$RECORD_JQ_DEFS"'
+  ((batch("waived") | map(. + {label: "Waived"})) + (batch("rejected") | map(. + {label: "Rejected"}))) as $b
+  | [ .acceptedKnown? // [] | if type == "array" then .[] | strings else empty end ] as $k
+  | (($b | length) + ($k | length)) as $n
+  | select($n > 0)
+  | "<details class=\"settled\"><summary>Settled by review (\($n))</summary><ul>"
+    + ($b | map(@html "<li><strong>\(.label)</strong> <code>\(.rule // "")</code> <code>\(where)</code></li>") | join(""))
+    + ($k | map(@html "<li><strong>Accepted as known</strong> \(.)</li>") | join(""))
+    + "</ul></details>"
+'
+
+# The content digest bin/merge-danger keys its files by (the second field of
+# --digest), or nothing when the tool is absent or fails. Pass --committed for
+# HEAD tree, as `danger` reads a fresh floor.
+merge_danger_digest() {
+  local root="$1" out
+  shift
+  [[ -x "$root/bin/merge-danger" ]] || return 0
+  out=$(cd "$root" && "$root/bin/merge-danger" --digest "$@" 2>/dev/null) || return 0
+  [[ $out == *' '* ]] && printf '%s' "${out#* }"
+  return 0
+}
+
+cmd_danger() {
+  local root plan tool msg rc verdict="" source status err gitdir
+  root=$(repo_root)
+  command -v jq >/dev/null 2>&1 || die "jq is required for the merge-danger cross-check"
+  plan=$(resolve_plan "$root" "$@")
+  tool="$root/bin/merge-danger"
+  if [[ ! -x $tool ]]; then
+    echo "$PROG: no bin/merge-danger in this repo; nothing to cross-check" >&2
+    return 0
+  fi
+
+  # --check says whether the stored verdict still describes this content.
+  # A stale or missing one (exit 1) is set aside for a fresh floor, which
+  # carries no one's judgement.
+  if msg=$(cd "$root" && "$tool" --check 2>&1); then rc=0; else rc=$?; fi
+  case $rc in
+    0)
+      gitdir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=""
+      [[ -n $gitdir ]] && verdict=$(cat "$gitdir/merge-danger.json" 2>/dev/null) || true
+      source=verdict
+      status=$msg
+      ;;
+    1)
+      err=$(mktemp)
+      if ! verdict=$(cd "$root" && "$tool" --floor --stdout --committed 2>"$err"); then
+        echo "$PROG: bin/merge-danger --floor failed: $(sed 's/^merge-danger: //' "$err" | head -n 1); no cross-check" >&2
+        rm -f "$err"
+        return 0
+      fi
+      rm -f "$err"
+      source=floor
+      status=$(printf '%s\n' "$msg" | head -n 1 | sed 's/^merge-danger: //; s/;.*//')
+      ;;
+    *)
+      echo "$PROG: bin/merge-danger --check failed (exit $rc): $(printf '%s\n' "$msg" | head -n 1 | sed 's/^merge-danger: //'); no cross-check" >&2
+      return 0
+      ;;
+  esac
+
+  if ! printf '%s' "$verdict" | jq -e 'type == "object" and (.door | type) == "string" and (.depth | type) == "string"' >/dev/null 2>&1; then
+    echo "$PROG: bin/merge-danger gave no readable verdict; no cross-check" >&2
+    return 0
+  fi
+
+  local out
+  if ! out=$(printf '%s' "$verdict" | jq --slurpfile plan "$plan" --arg source "$source" --arg status "$status" "$DANGER_JQ" 2>/dev/null); then
+    echo "$PROG: could not compare the plan with the verdict; no cross-check" >&2
+    return 0
+  fi
+  printf '%s\n' "$out"
+
+  local n
+  n=$(printf '%s' "$out" | jq '.disagreements | length')
+  if [[ $(printf '%s' "$out" | jq -r '.review.door // empty') == "" ]]; then
+    echo "$PROG: no group has a door call, so the door was not compared" >&2
+  fi
+  if [[ $n == 0 ]]; then
+    echo "$PROG: the review agrees with the verdict; add this object as the plan's \"mergeDanger\" and write the plan again" >&2
+  else
+    echo "$PROG: $n disagreement(s); write each \"reason\", add this object as the plan's \"mergeDanger\", and write the plan again" >&2
+  fi
+}
 
 cmd_report_dir() {
   local root plan dir slug
@@ -826,6 +1093,46 @@ cmd_render() {
   subtitle=$(jq -r '.subtitle // ""' "$dir/meta.json")
   [[ -n $title ]] || title="Review"
 
+  # The merge-danger cross-check and the review record, both keyed by the
+  # content digest bin/merge-danger computes. Each is read only if present,
+  # and neither can withhold the page: a verdict read for other content is
+  # labelled as such, and a record for other content is left out.
+  local md_html="" held_html="" settled_html="" md_digest md_source md_stale=0 cur gitdir record rec_digest
+  if jq -e '.mergeDanger | type == "object"' "$plan" >/dev/null 2>&1; then
+    md_digest=$(jq -r '.mergeDanger.digest // empty | strings' "$plan" 2>/dev/null) || md_digest=""
+    md_source=$(jq -r '.mergeDanger.source // empty | strings' "$plan" 2>/dev/null) || md_source=""
+    if [[ -n $md_digest ]]; then
+      # A fresh floor was read for HEAD tree; a stored verdict for the working tree.
+      if [[ $md_source == floor ]]; then
+        cur=$(merge_danger_digest "$root" --committed)
+      else
+        cur=$(merge_danger_digest "$root")
+      fi
+      [[ -n $cur && $cur != "$md_digest" ]] && md_stale=1
+    fi
+    md_html=$(jq -r --arg stale "$md_stale" "$DANGER_HTML_JQ" "$plan" 2>/dev/null) || {
+      md_html=""
+      echo "$PROG: could not render the plan's mergeDanger; left it out" >&2
+    }
+  fi
+  gitdir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=""
+  record="$gitdir/review-record.json"
+  if [[ -n $gitdir && -f $record ]]; then
+    cur=$(merge_danger_digest "$root")
+    rec_digest=$(jq -r '.digest // empty | strings' "$record" 2>/dev/null) || rec_digest=""
+    if [[ -z $cur ]]; then
+      echo "$PROG: cannot tell which content $record describes (bin/merge-danger --digest gave nothing); left it out" >&2
+    elif [[ $rec_digest != "$cur" ]]; then
+      echo "$PROG: $record describes other content; left it out" >&2
+    else
+      if ! held_html=$(jq -r "$RECORD_HELD_JQ" "$record" 2>/dev/null) ||
+        ! settled_html=$(jq -r "$RECORD_SETTLED_JQ" "$record" 2>/dev/null); then
+        held_html="" settled_html=""
+        echo "$PROG: could not read $record; left it out" >&2
+      fi
+    fi
+  fi
+
   tmp=$(mktemp "$outdir/.report.XXXXXX")
 
   {
@@ -859,18 +1166,26 @@ cmd_render() {
     printf '  <h1>%s</h1>\n' "$(esc "$title")"
     [[ -n $subtitle ]] && printf '  <p class="subtitle">%s</p>\n' "$(esc "$subtitle")"
 
-    if [[ -s "$dir/_overview.md" || -s "$dir/_tldr.md" || -s "$dir/_glossary.md" ]]; then
+    if [[ -s "$dir/_overview.md" || -s "$dir/_tldr.md" || -s "$dir/_glossary.md" ||
+      -n $md_html || -n $held_html || -n $settled_html ]]; then
       printf '  <div class="front">\n'
       if [[ -s "$dir/_overview.md" ]]; then
         printf '  <div class="overview"><h3>Overview</h3><div class="md">'
         printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_overview.md")"
         printf '</div></div>\n'
       fi
-      if [[ -s "$dir/_tldr.md" ]]; then
-        printf '  <div class="tldr"><h3>TL;DR</h3><div class="md">'
-        printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_tldr.md")"
-        printf '</div></div>\n'
+      # The TL;DR leads with any disagreement with the verdict, and ends with
+      # what the review record left for a person to decide.
+      if [[ -s "$dir/_tldr.md" || -n $md_html || -n $held_html ]]; then
+        printf '  <div class="tldr"><h3>TL;DR</h3>'
+        [[ -n $md_html ]] && printf '%s' "$md_html"
+        if [[ -s "$dir/_tldr.md" ]]; then
+          printf '<div class="md"><script type="text/markdown">%s</script></div>' "$(b64e "$dir/_tldr.md")"
+        fi
+        [[ -n $held_html ]] && printf '%s' "$held_html"
+        printf '</div>\n'
       fi
+      [[ -n $settled_html ]] && printf '  %s\n' "$settled_html"
       # Closed by default: a reader looks a term up, nobody reads the list.
       if [[ -s "$dir/_glossary.md" ]]; then
         local nterms label="Glossary"
@@ -1482,6 +1797,7 @@ main() {
     clear) cmd_clear "$@" ;;
     viewed) cmd_viewed "$@" ;;
     notes) cmd_notes "$@" ;;
+    danger) cmd_danger "$@" ;;
     wait) cmd_wait "$@" ;;
     -h | --help) usage ;;
     "")

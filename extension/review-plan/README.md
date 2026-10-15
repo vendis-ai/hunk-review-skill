@@ -40,6 +40,7 @@ interface ReviewPlan {
   generatedAt?: string; // ISO timestamp, informational only
   label?: string; // informational only
   summary?: string; // one-line thesis for the whole changeset
+  mergeDanger?: MergeDanger; // `hunk-plan danger` output plus reasons; writeup only, never in the TUI
   groups: PlanGroup[];
 }
 
@@ -68,6 +69,28 @@ interface PlanAnnotation {
   newRange?: [number, number]; // 1-based, inclusive, [start, end], start <= end
   tags?: string[];
   confidence?: "low" | "medium" | "high";
+}
+
+interface MergeDanger {
+  source: "verdict" | "floor"; // the stored verdict was current, or a fresh floor stood in
+  status?: string; // what bin/merge-danger --check said
+  digest?: string; // the content the verdict describes
+  door: "one-way" | "two-way";
+  depth: "skim" | "review" | "critical";
+  finalized?: boolean;
+  blastRadius?: { scope: string; note: string };
+  oneWayReasons?: string[];
+  review?: { door: string | null; depth: string | null }; // the review's calls when danger ran
+  disagreements: {
+    field: "door" | "depth";
+    verdict: string; // the verdict's value, or for a class row the class's own
+    review: string;
+    group: string | null; // null for the whole change, or for files outside the plan
+    class: string | null; // the merge-danger class, null for the whole change
+    files?: string[];
+    needs?: "review" | "operator"; // a raise needs a confirming note, a lower the operator
+    reason: string; // the review's own, written after danger ran
+  }[];
 }
 ```
 

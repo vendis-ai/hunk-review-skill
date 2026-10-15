@@ -173,7 +173,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    Every group also gets a `door` and a `blastRadius`. Make both calls from the diff and the spec
    alone, before you read any merge-danger verdict the repo keeps: `merge-danger.json` in the git
    directory, `.github/merge-danger.yml`, or a PR body's Merge Danger section. The call is worth
-   something only as a second opinion, and one copied from the verdict adds nothing. `door` is
+   something only as a second opinion, and one copied from the verdict adds nothing; step 8 sets
+   them next to the verdict. `door` is
    `one-way` when reverting the commit does not undo the change: data rewritten or deleted, a
    message or payment sent, a stored format once the first record is written in it, a contract
    other code now calls. Anything else is `two-way`. Be most suspicious of "two-way, small": a
@@ -224,12 +225,40 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    The out-of-repo path is the default for a reason — never write the plan into a client
    repository by default; `--in-repo` is opt-in and leaves an untracked file behind.
 
-   Schema: `{version:1, summary?, groups:[{title, summary?, importance?, door?,
+   Schema: `{version:1, summary?, mergeDanger?, groups:[{title, summary?, importance?, door?,
    blastRadius?:{scope, note}, collapsed?, hidden?, files:[{path, importance?, note?,
    annotations?:[{summary, rationale?, newRange?, oldRange?, tags?, confidence?}]}]}]}`. `door`
-   is `"one-way"` or `"two-way"`. `summary` is required on every annotation. Ranges are 1-based
+   is `"one-way"` or `"two-way"`. `mergeDanger` is what `hunk-plan danger` prints (below), with
+   your reasons. `summary` is required on every annotation. Ranges are 1-based
    positive ordered integer pairs. `hidden` only takes effect when `hide_groups = true` is set in
    config.
+
+   Then cross-check your door calls against the repo's merge-danger verdict, when the repo keeps
+   one (an executable `bin/merge-danger`, as Vendis has):
+
+       hunk-plan danger
+
+   It reads the stored verdict when `bin/merge-danger --check` calls it current, and a fresh floor
+   when not, and compares it with the plan you just wrote. It never recomputes the verdict, so
+   never re-apply the globs in `.github/merge-danger.yml` by hand: two of its detectors read file
+   contents. It prints a `mergeDanger` object, with one row per disagreement:
+
+   - the verdict's door or depth for the whole change against yours: one-way if any group is,
+     and the top group's tier;
+   - a group that holds files of a fired merge-danger class but is ranked below that class's
+     depth, or called two-way where the class is one-way. A file outside the plan counts as Skim.
+
+   Never change a door or an importance after reading the verdict. Your calls are worth something
+   only because you made them before you read it, so a difference stays a disagreement, and the
+   reviewer settles it. Write each row's `reason`: one or two sentences on why your call
+   differs, even when the honest answer is that you missed what the class names. Read
+   `.github/merge-danger.yml` for each class's reason text, and nothing else from it. Then add the
+   object to the plan as its top-level `mergeDanger` and write the plan again. `hunk-plan write`
+   warns about a row with no reason, a row naming a group the plan does not have, and a
+   `mergeDanger` made for other group calls (run `danger` again and copy the reasons over).
+
+   This is a second opinion, never a gate. With no `bin/merge-danger`, or when it fails, `danger`
+   says so on stderr, prints nothing and exits 0: go on without the cross-check.
 
 9. Write the HTML writeup, always — this is not optional. You author prose only. `hunk-plan
    render` owns the page frame, the palette and its dark-mode pairing, the nav, the table of
@@ -306,7 +335,13 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      follow it.
    - `_tldr.md` — **for the reviewer: exactly 2 bullets.** `**Biggest risk:**` the one thing
      most likely to break, and where. `**Check first:**` the file or hunk to open first, with its
-     group and ref tag. What the branch does belongs in the overview, not here.
+     group and ref tag. What the branch does belongs in the overview, not here. When the plan has
+     a `mergeDanger` (step 8), the renderer puts the verdict and each disagreement, with your
+     reason, above these bullets; do not repeat them here. When the repo keeps a review record
+     for this content (`review-record.json` in the git dir, written by Vendis's review gate), the
+     renderer adds the items it held for the reviewer under the bullets and a closed block of the
+     ones it waived, rejected or accepted as known. Never re-report an item that record says was
+     fixed.
    - `_glossary.md` — **the terms on this page that a newcomer to this repo would not know.** One
      bullet per term, `- **Term**: meaning.`, in alphabetical order. At most 12 terms, and each
      meaning 12 words or fewer, with no examples and no history. A rule the repo attaches to a
@@ -451,8 +486,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     sub-agent that ends its turn returns to its caller, and nothing wakes it again, so a
     background wait would deliver the reviewer's `S` to no one. Return to the caller instead: the
     plan path (`hunk-plan path`), the writeup's `file://` URL, the exact `hunk diff <merge-base>`
-    command, the counts from step 10, and one line saying the caller owns this step —
-    `hunk-plan wait`, then hunk-handle-notes on each go.
+    command, the counts from step 10, the number of merge-danger disagreements (step 8), and one
+    line saying the caller owns this step — `hunk-plan wait`, then hunk-handle-notes on each go,
+    then the merge-danger changes it lists.
 
         hunk-plan wait
 
@@ -470,9 +506,16 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
     - `0`, go. Handle the notes as hunk-handle-notes describes, in the hand-off's `mode` and
       with its `instruction`; that skill's "Notes from a hand-off" section covers both. Then
-      re-render the writeup, tell the user what changed and to press `r` in Hunk, and run
-      `hunk-plan wait` again.
-    - `10`, approved. Stop waiting, say so, and finish.
+      run each merge-danger change it listed (its "Merge-danger changes"): the reviewer confirmed
+      them, and you run the loop. When `bin/merge-danger` refuses one, report its message and go
+      on; a refusal never stops the loop. After any change, run `bin/merge-danger --check` and
+      tell the user that the PR body's Merge Danger section is now out of date (in Vendis,
+      vendis-pr-finalize rewrites it). Touch no GitHub yourself. Then re-render the writeup, tell
+      the user what changed and to press `r` in Hunk, and run `hunk-plan wait` again. Never write
+      the plan again inside the loop, not even to refresh its `mergeDanger`: a new plan id would
+      make the open window's next answer count as one for an earlier plan.
+    - `10`, approved. Stop waiting, say so, and finish. Open merge-danger disagreements never
+      hold an approval back: the reviewer saw them at the top of the TL;DR.
     - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to
       ask you to wait again when they are ready. If stderr says it set aside a hand-off from an
       earlier window, pass on what it says to do: press `r` in Hunk and send again, or, for a
@@ -493,6 +536,7 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     hunk-plan gc         [--dry-run] [--yes] [--older-than <days>]
     hunk-plan wait       [--timeout <seconds>]
     hunk-plan notes      [--json] [--all]
+    hunk-plan danger     [--in-repo]
 
 ## Failure modes
 

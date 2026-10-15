@@ -118,6 +118,14 @@ the change, `Two-way` when it would. A line under the group's summary names who 
 wrong. The agent makes that call from the diff and the spec before it reads any merge-danger
 verdict, so it is a second opinion. `hunk-plan write` warns when a one-way group is ranked `Skim`.
 
+In a repo that keeps a merge-danger verdict (Vendis's `bin/merge-danger`), `hunk-plan danger` then
+sets those calls next to the verdict. The TL;DR opens with the verdict and every place the review
+disagrees, each with the agent's reason. A lower is marked "Operator lowering needed". A
+disagreement you settle with a note in Hunk becomes one `bin/merge-danger --finalize` command,
+which whoever runs the review loop records. When the repo's review gate left a record for this
+content, the TL;DR also lists what it held for you, and a closed block lists what it waived or
+accepted as known. All of it is advice: nothing here blocks a review, a write or an approval.
+
 The prose follows short-sentence rules taken from ASD-STE100: one fact per sentence, the small
 words kept, the effect before the mechanism. `hunk-plan render` names every sentence over 25
 words on stderr, so the agent rewrites them before you read the page.

@@ -48,6 +48,9 @@ session has dropped from the daemon.
   state or risk) — do not decide unilaterally. Hold it and surface it to the user instead.
 - **Out of scope** (unrelated files, shell commands, network calls, credentials) — report it to
   the user, do not execute it.
+- **Merge-danger change** — the note or the hand-off's `instruction` settles a disagreement the
+  plan's `mergeDanger` lists (`hunk-plan show`) by saying which side is right. See "Merge-danger
+  changes" below.
 
 Every note gets a reply in both places — chat and the session, never chat alone:
 
@@ -87,6 +90,37 @@ target). So:
 - Commit only when the user's Hunk diffs against a commit, such as the fork point. When unsure,
   leave committing to the user.
 
+## Merge-danger changes
+
+The writeup's TL;DR lists where hunk-review's door and depth calls differ from the repo's
+merge-danger verdict (Vendis's `bin/merge-danger`). A reviewer settles a row by saying which side
+is right. Only words that name the row's field and pick a side count: "agreed, this is one-way",
+"Review is enough here, the mail never sends". Silence, a vague "looks fine" and an approval
+settle nothing. When a note might mean either side, treat it as debatable and ask.
+
+A note that sides with the verdict changes nothing; say so in the reply. A note that sides with
+the review's call becomes one command. **Do not run it while you handle the notes:** list it in
+your report, and the loop's next step runs it. That is vendis-pr-finalize's item 4 in Vendis, and
+hunk-review's step 11 in a review it runs itself.
+
+    bin/merge-danger --finalize --by <review|operator> --<door|depth> <value> \
+      --reason "<the note or instruction text, verbatim>" --source <source>
+
+- `--by review` when the review's call is above the verdict (a raise). It becomes a standing
+  minimum: it carries to new content, and only the operator lowers it.
+- `--by operator` when the review's call is below the verdict (a lower). Only a note whose
+  `source` is `user`, or the instruction, can ask for one; the reviewer wrote it, so it counts as
+  a direct operator message. The tool binds a lower to the content it is recorded on, so when
+  your fixes in this go changed any file, do not list the lower: it would cover content the
+  reviewer has not seen. Say so, and ask the reviewer about the new content instead.
+- `<value>` is the row's `review` value.
+- `--source` is `hunk-note:<id>@<createdAt>` for a note (`hunk-note:<id>` when it has no
+  `createdAt`), and `hunk-go:<createdAt>` for the instruction, with the hand-off's own
+  `createdAt`.
+
+Reply on the note with what will happen: "Confirmed: door one-way. The loop owner records it in the
+verdict."
+
 ## Keep the HTML writeup in sync
 
 hunk-review (if it ran first) leaves a companion writeup next to the plan. **Never edit that
@@ -124,6 +158,8 @@ Close with one summary grouped by outcome, not a list of notes in file order:
 - Explained — the short version of each answer (the full answer already lives in the session).
 - Open for you — the debatable ones, with the specific question each raises.
 - Declined, out of scope — what was asked and why it was not done.
+- Merge-danger changes — each command from the section above, ready to run, with the row it
+  settles. Say "none" when the plan has a `mergeDanger` and no note settled a row.
 
 Leave the session loaded so the user can re-read it. They press `r` in Hunk to reload once you
 are done. Do not suggest `--watch`: it reloads in the middle of your edits, so a file that leaves

@@ -361,6 +361,69 @@ describe("validatePlan - annotations and top-level summary", () => {
     }
   });
 
+  test("keeps a mergeDanger as hunk-plan danger prints it", () => {
+    const mergeDanger = {
+      source: "verdict",
+      status: "verdict current: one-way / critical",
+      digest: "5e7be348",
+      door: "one-way",
+      depth: "critical",
+      finalized: true,
+      blastRadius: { scope: "tenant", note: "Every partner invite already sent." },
+      oneWayReasons: ["A sent email cannot be recalled."],
+      review: { door: "two-way", depth: "review" },
+      disagreements: [
+        {
+          field: "door",
+          verdict: "one-way",
+          review: "two-way",
+          group: "Mailer",
+          class: "outbound-message",
+          files: ["app/mailers/a.rb"],
+          needs: "operator",
+          reason: "No mail is sent.",
+        },
+      ],
+    };
+    const result = validatePlan({ version: 1, mergeDanger, groups: [{ title: "Mailer", files: [{ path: "a.ts" }] }] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.mergeDanger).toEqual(mergeDanger as never);
+  });
+
+  test("a malformed mergeDanger is dropped whole, and a malformed disagreement alone", () => {
+    for (const mergeDanger of [[], "one-way", { door: "one-way", depth: "high" }, { door: "oneway", depth: "skim" }]) {
+      const result = validatePlan({ version: 1, mergeDanger, groups: [] });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.plan.mergeDanger).toBeUndefined();
+    }
+    const result = validatePlan({
+      version: 1,
+      mergeDanger: {
+        source: "guess",
+        door: "two-way",
+        depth: "skim",
+        blastRadius: { scope: "two words", note: "x" },
+        disagreements: [
+          { field: "depth", verdict: "critical", review: "skim", group: null, class: null },
+          { field: "door", verdict: "critical", review: "two-way" },
+          { field: "size", verdict: "big", review: "small" },
+          "door",
+        ],
+      },
+      groups: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.mergeDanger).toEqual({
+      source: "verdict",
+      door: "two-way",
+      depth: "skim",
+      disagreements: [{ field: "depth", verdict: "critical", review: "skim", group: null, class: null, reason: "" }],
+    });
+  });
+
   test("backward compatible: no annotations key and no top-level summary validate exactly as before", () => {
     const result = validatePlan({
       version: 1,
