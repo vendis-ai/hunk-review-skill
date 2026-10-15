@@ -82,13 +82,16 @@ run_wait() {
   RC=$?
 }
 
-# json_id [<id>]: a plan id as JSON, null when there is none.
+# json_id [<id>|none]: a plan id as JSON. No argument means the current plan's
+# id, what an up-to-date window showing it writes; `none` (or no plan yet) is
+# null, what a window started before plan ids writes.
 json_id() {
-  if [[ -n ${1:-} ]]; then printf '"%s"' "$1"; else printf 'null'; fi
+  local id="${1:-}"
+  if [[ -z $id ]]; then id=$(jq -r '.planId // empty' "${PLAN:-/nonexistent}" 2>/dev/null); fi
+  if [[ -n $id && $id != none ]]; then printf '"%s"' "$id"; else printf 'null'; fi
 }
 
-# write_marker <kind> [<planId>]: a hand-off as the extension writes it. No
-# plan id is what an extension from before plan ids writes.
+# write_marker <kind> [<planId>|none]: a hand-off as the extension writes it.
 write_marker() {
   mkdir -p "$LOOP"
   cat >"$LOOP/go.json" <<JSON
@@ -109,7 +112,7 @@ write_marker() {
 JSON
 }
 
-# write_window <pid> [open|closed] [<planId>]: Hunk's presence record.
+# write_window <pid> [open|closed] [<planId>|none]: Hunk's presence record.
 write_window() {
   local id
   id=$(json_id "${3:-}")
@@ -196,10 +199,9 @@ write_window "$DEAD"
 run_wait --timeout 5
 assert_eq "$RC" "3" "a window whose process is gone: exit 3"
 
-write_window $$ closed
-touch -t 202001010000 "$LOOP/window.json"
+write_window $$ closed none
 run_wait --timeout 0
-assert_eq "$RC" "2" "a window closed before this plan was written belongs to an older review"
+assert_eq "$RC" "2" "a window started before plan ids says nothing about a plan that has one"
 
 write_window $$ closed
 write_marker go
@@ -231,10 +233,15 @@ run_wait --timeout 5
 assert_eq "$RC" "0" "a hand-off for this plan is delivered"
 assert_eq "$(jq -r '.planId' "$OUT")" "$PLAN_ID" "and carries the plan id"
 
-write_marker approve
-touch -t 202001010000 "$LOOP/go.json"
+write_marker approve none
 run_wait --timeout 0
-assert_eq "$RC" "2" "without an id, a hand-off older than the plan answers an earlier review"
+assert_eq "$RC" "2" "an approval from a window started before plan ids is not delivered, however recent"
+grep -q 'started before plan ids; quit and reopen Hunk, then send again' "$ERR" &&
+  ok "says to reopen Hunk, since r cannot help" || no "says to reopen Hunk, since r cannot help ($(cat "$ERR"))"
+
+write_window $$ closed none
+run_wait --timeout 0
+assert_eq "$RC" "2" "nor does a quit of such a window end the wait"
 
 write_window $$ closed "an-earlier-plan"
 run_wait --timeout 0
@@ -249,6 +256,15 @@ jq 'del(.planId)' "$PLAN" >"$TMP/plan.json" && mv "$TMP/plan.json" "$PLAN"
 write_marker go "some-id"
 run_wait --timeout 5
 assert_eq "$RC" "0" "a plan without an id (written by hand) falls back to file times"
+write_marker approve none
+touch -t 202001010000 "$LOOP/go.json"
+run_wait --timeout 0
+assert_eq "$RC" "2" "and against such a plan, a hand-off older than it answers an earlier review"
+write_window $$ closed none
+touch -t 202001010000 "$LOOP/window.json"
+run_wait --timeout 0
+assert_eq "$RC" "2" "as does a window closed before it was written"
+rm -f "$LOOP/window.json"
 printf '{"version":1,"groups":[]}' | run_plan write >/dev/null 2>&1
 PLAN_ID=$(jq -r '.planId // empty' "$PLAN")
 
@@ -302,6 +318,14 @@ cat >"$TMP/comments.json" <<'JSON'
 JSON
 run_wait --timeout 5
 assert_eq "$RC" "10" "one written after the plan counts"
+
+cat >"$TMP/comments.json" <<'JSON'
+{ "comments": [ { "noteId": "user:6-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE" } ] }
+JSON
+write_window $$ open
+run_wait --timeout 0
+assert_eq "$RC" "2" "once the extension has opened the repo, typed notes are not read: S and A are the hand-off"
+rm -f "$LOOP/window.json"
 rm -f "$TMP/comments.json"
 
 echo

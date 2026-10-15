@@ -457,8 +457,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
       `hunk-plan wait` again.
     - `10`, approved. Stop waiting, say so, and finish.
     - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to
-      ask you to wait again when they are ready. If stderr says it set aside a hand-off from a
-      window showing an earlier plan, tell the user to press `r` in Hunk and send again.
+      ask you to wait again when they are ready. If stderr says it set aside a hand-off from an
+      earlier window, pass on what it says to do: press `r` in Hunk and send again, or, for a
+      window started before plan ids, quit and reopen Hunk.
     - `3`, nothing to wait on: there is no plan, or Hunk was closed since the plan was written,
       which also lost its notes. Stop and say which.
     - Anything else is an error. Report it and stop.

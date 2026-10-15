@@ -288,9 +288,14 @@ The directory is keyed by repo, not by review, so both files also carry the
 `planId` that `hunk-plan write` stamps into every plan it writes: the id of the
 plan this window loaded last, refreshed on each reload. A window still showing
 an earlier plan refuses `S` and `A` and asks for `r` first. If one gets through
-anyway (an extension from before plan ids, or a write that lands mid-send),
-`wait` sets it aside as `stale.json` instead of delivering it, and a quit of
-such a window does not end the wait for the new plan.
+anyway (a write that lands mid-send), `wait` sets it aside as `stale.json`
+instead of delivering it, and a quit of such a window does not end the wait for
+the new plan. A window started before plan ids existed writes no id at all;
+once the plan carries one, `wait` treats it the same way and asks you to quit
+and reopen Hunk, since `r` does not load new extension code. Once a window
+with an id has opened the repo, typed `GO`/`APPROVE` notes are no longer read:
+the daemon does not say which window a note came from, so only `S` and `A` can
+be tied to a plan.
 
 Notes are journaled next to them too, at
 `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.notes.jsonl`,

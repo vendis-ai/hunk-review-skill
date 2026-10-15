@@ -102,9 +102,11 @@ Commands:
                         note, the reviewer's new ones marked "new": true.
                         Without the extension, a note typed in Hunk that reads
                         GO (or "GO: <instruction>") or APPROVE does the same
-                        through the session daemon, and is removed once read.
-                        Only an answer to the current plan counts: a hand-off
-                        from a window still showing an earlier plan is set
+                        through the session daemon, and is removed once read;
+                        once the extension has opened the repo, typed notes
+                        are not read. Only an answer to the current plan
+                        counts: a hand-off from a window showing an earlier
+                        plan, or from one started before plan ids, is set
                         aside as <loop>/stale.json (named on stderr) and the
                         wait goes on, and so does a quit of such a window.
                         Exit codes: 0 go, 10 approved, 2 still waiting (run it
@@ -1090,14 +1092,16 @@ emit_marker() {
 }
 
 # True when a hand-off file answers an earlier plan than the one waited on.
-# With an id on both sides the ids decide. Without one (a plan, or an
-# extension, from before plan ids) a file older than the plan belongs to an
-# earlier review -- the rule window_closed applies to window.json.
+# Once the plan carries an id, the ids decide, and a file without one comes
+# from a Hunk window started before plan ids: it cannot show this plan's id,
+# so it cannot answer this plan either. Only a plan from before plan ids
+# falls back to file times -- a file older than the plan belongs to an
+# earlier review, the rule window_closed applies to window.json.
 for_earlier_plan() {
   local file="$1" plan="$2" plan_id="$3" file_id
   [[ -n $plan ]] || return 1
   file_id=$(plan_id_of "$file")
-  if [[ -n $plan_id && -n $file_id ]]; then
+  if [[ -n $plan_id ]]; then
     [[ $file_id != "$plan_id" ]]
     return
   fi
@@ -1118,7 +1122,11 @@ take_marker() {
   fi
   if for_earlier_plan "$taken" "$plan" "$plan_id"; then
     mv -f "$taken" "$loop/stale.json"
-    echo "$PROG: set aside a hand-off from a Hunk window showing an earlier plan; press r in Hunk and send again (kept at $loop/stale.json)" >&2
+    if [[ -n $(plan_id_of "$loop/stale.json") ]]; then
+      echo "$PROG: set aside a hand-off from a Hunk window showing an earlier plan; press r in Hunk and send again (kept at $loop/stale.json)" >&2
+    else
+      echo "$PROG: set aside a hand-off from a Hunk window started before plan ids; quit and reopen Hunk, then send again (kept at $loop/stale.json)" >&2
+    fi
     return 1
   fi
   mv -f "$taken" "$loop/last.json"
@@ -1134,8 +1142,15 @@ take_marker() {
 # Only a note written after the plan counts; one typed into a window that
 # still shows an earlier review answers that review. A note whose time cannot
 # be read counts, as before.
+#
+# The daemon does not say which window a note came from, so nothing ties a
+# typed note to the plan its window shows. Once an extension that records
+# plan ids has opened the repo (window.json carries one), S and A are the
+# hand-off and typed notes are not read at all. What remains is the case with
+# no extension: a GO typed into a window opened before the new plan counts.
 take_sentinel() {
   local root="$1" loop="$2" plan="$3" plan_id="$4" list seen head marker id since=0
+  [[ -z $(plan_id_of "$loop/window.json") ]] || return 1
   command -v hunk >/dev/null 2>&1 || return 1
   list=$(hunk session comment list --repo "$root" --type user --json 2>/dev/null) || return 1
   seen='[]'
