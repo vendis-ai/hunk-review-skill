@@ -260,6 +260,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    This is a second opinion, never a gate. With no `bin/merge-danger`, or when it fails, `danger`
    says so on stderr, prints nothing and exits 0: go on without the cross-check.
 
+   `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only once the
+   repo's local git config allows it: `git config hunk.mergeDanger true`. Until then, `danger`
+   prints nothing and says so. **Never set that yourself**, not even to finish this step: it is
+   the user's call whether this repo's branches may run code on their machine. Tell the user the
+   command, and go on without the cross-check.
+
 9. Write the HTML writeup, always — this is not optional. You author prose only. `hunk-plan
    render` owns the page frame, the palette and its dark-mode pairing, the nav, the table of
    contents, the section ids, the verdict badges, the Markdown and Mermaid wiring, and every
@@ -507,8 +513,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     - `0`, go. Handle the notes as hunk-handle-notes describes, in the hand-off's `mode` and
       with its `instruction`; that skill's "Notes from a hand-off" section covers both. Then
       run each merge-danger change it listed (its "Merge-danger changes"): the reviewer confirmed
-      them, and you run the loop. When `bin/merge-danger` refuses one, report its message and go
-      on; a refusal never stops the loop. After any change, run `bin/merge-danger --check` and
+      them, and you run the loop. Run them only when the repo allows `bin/merge-danger` (step 8);
+      otherwise give them to the user. When `bin/merge-danger` refuses one, report its message
+      and go on; a refusal never stops the loop. After any change, run `bin/merge-danger --check` and
       tell the user that the PR body's Merge Danger section is now out of date (in Vendis,
       vendis-pr-finalize rewrites it). Touch no GitHub yourself. Then re-render the writeup, tell
       the user what changed and to press `r` in Hunk, and run `hunk-plan wait` again. Never write

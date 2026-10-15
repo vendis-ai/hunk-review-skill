@@ -69,10 +69,11 @@ Commands:
                         nav, table of contents, section ids, verdict badges and
                         link rules are all derived here; only the body prose
                         comes from the report directory. A plan "mergeDanger"
-                        leads the TL;DR. With bin/merge-danger, a review
-                        record for the current content (review-record.json
-                        in the git dir) adds the items held for you under the
-                        TL;DR and a closed block of the settled ones.
+                        leads the TL;DR. With bin/merge-danger allowed (see
+                        danger), a review record for the current content
+                        (review-record.json in the git dir) adds the items
+                        held for you under the TL;DR and a closed block of
+                        the settled ones.
                         Sentences over 25 words and an oversized glossary are
                         reported on stderr; they never stop the render.
                         A meta.json "docs" entry takes either "path" (repo-
@@ -105,7 +106,10 @@ Commands:
                         >) runs, so an agent reply shows only once one has.
   danger [--in-repo]    Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
-                        bin/merge-danger (Vendis). Uses the stored verdict
+                        bin/merge-danger (Vendis). That script comes with the
+                        checked-out branch, so it runs only once the repo's
+                        local git config allows it (git config
+                        hunk.mergeDanger true). Uses the stored verdict
                         when `bin/merge-danger --check` calls it current, and
                         a fresh floor (--floor --stdout --committed) when not.
                         Prints a "mergeDanger" object for the plan, with each
@@ -900,28 +904,48 @@ RECORD_SETTLED_JQ="$RECORD_JQ_DEFS"'
     + "</ul></details>"
 '
 
+# bin/merge-danger comes with the checked-out branch, so running it because it
+# is there would run whatever a branch under review put there. It runs only
+# once the repo owner allows it in the repo's local git config, which no branch
+# can change; a global or command-line setting does not count.
+MERGE_DANGER_OPT_IN='bin/merge-danger comes with the checked-out branch, so it runs only once you allow it for this repo: git config hunk.mergeDanger true'
+
+# The path of a bin/merge-danger allowed to run. Status 1: the repo has none.
+# Status 2: it has one, but the repo has not allowed it.
+merge_danger_tool() {
+  local root="$1"
+  [[ -x "$root/bin/merge-danger" ]] || return 1
+  [[ $(git -C "$root" config --local --bool --get hunk.mergeDanger 2>/dev/null) == true ]] || return 2
+  printf '%s' "$root/bin/merge-danger"
+}
+
 # The content digest bin/merge-danger keys its files by (the second field of
-# --digest), or nothing when the tool is absent or fails. Pass --committed for
-# HEAD tree, as `danger` reads a fresh floor.
+# --digest), or nothing when the tool fails. Pass --committed for HEAD tree,
+# as `danger` reads a fresh floor.
 merge_danger_digest() {
-  local root="$1" out
-  shift
-  [[ -x "$root/bin/merge-danger" ]] || return 0
-  out=$(cd "$root" && "$root/bin/merge-danger" --digest "$@" 2>/dev/null) || return 0
+  local root="$1" tool="$2" out
+  shift 2
+  out=$(cd "$root" && "$tool" --digest "$@" 2>/dev/null) || return 0
   [[ $out == *' '* ]] && printf '%s' "${out#* }"
   return 0
 }
 
 cmd_danger() {
-  local root plan tool msg rc verdict="" source status err gitdir
+  local root plan tool gate=0 msg rc verdict="" source status err gitdir
   root=$(repo_root)
   command -v jq >/dev/null 2>&1 || die "jq is required for the merge-danger cross-check"
   plan=$(resolve_plan "$root" "$@")
-  tool="$root/bin/merge-danger"
-  if [[ ! -x $tool ]]; then
-    echo "$PROG: no bin/merge-danger in this repo; nothing to cross-check" >&2
-    return 0
-  fi
+  tool=$(merge_danger_tool "$root") || gate=$?
+  case $gate in
+    1)
+      echo "$PROG: no bin/merge-danger in this repo; nothing to cross-check" >&2
+      return 0
+      ;;
+    2)
+      echo "$PROG: $MERGE_DANGER_OPT_IN; no cross-check" >&2
+      return 0
+      ;;
+  esac
 
   # --check says whether the stored verdict still describes this content.
   # A stale or missing one (exit 1) is set aside for a fresh floor, which
@@ -1098,15 +1122,23 @@ cmd_render() {
   # and neither can withhold the page: a verdict read for other content is
   # labelled as such, and a record for other content is left out.
   local md_html="" held_html="" settled_html="" md_digest md_source md_stale=0 cur gitdir record rec_digest
+  local md_tool md_gate=0 md_why
+  md_tool=$(merge_danger_tool "$root") || md_gate=$?
+  case $md_gate in
+    1) md_why="the repo has no bin/merge-danger" ;;
+    2) md_why=$MERGE_DANGER_OPT_IN ;;
+  esac
   if jq -e '.mergeDanger | type == "object"' "$plan" >/dev/null 2>&1; then
     md_digest=$(jq -r '.mergeDanger.digest // empty | strings' "$plan" 2>/dev/null) || md_digest=""
     md_source=$(jq -r '.mergeDanger.source // empty | strings' "$plan" 2>/dev/null) || md_source=""
-    if [[ -n $md_digest ]]; then
+    if [[ -n $md_digest && $md_gate != 0 ]]; then
+      echo "$PROG: cannot tell whether the plan's mergeDanger describes this content ($md_why)" >&2
+    elif [[ -n $md_digest ]]; then
       # A fresh floor was read for HEAD tree; a stored verdict for the working tree.
       if [[ $md_source == floor ]]; then
-        cur=$(merge_danger_digest "$root" --committed)
+        cur=$(merge_danger_digest "$root" "$md_tool" --committed)
       else
-        cur=$(merge_danger_digest "$root")
+        cur=$(merge_danger_digest "$root" "$md_tool")
       fi
       [[ -n $cur && $cur != "$md_digest" ]] && md_stale=1
     fi
@@ -1118,9 +1150,12 @@ cmd_render() {
   gitdir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=""
   record="$gitdir/review-record.json"
   if [[ -n $gitdir && -f $record ]]; then
-    cur=$(merge_danger_digest "$root")
+    cur=""
+    [[ $md_gate == 0 ]] && cur=$(merge_danger_digest "$root" "$md_tool")
     rec_digest=$(jq -r '.digest // empty | strings' "$record" 2>/dev/null) || rec_digest=""
-    if [[ -z $cur ]]; then
+    if [[ $md_gate != 0 ]]; then
+      echo "$PROG: cannot tell which content $record describes ($md_why); left it out" >&2
+    elif [[ -z $cur ]]; then
       echo "$PROG: cannot tell which content $record describes (bin/merge-danger --digest gave nothing); left it out" >&2
     elif [[ $rec_digest != "$cur" ]]; then
       echo "$PROG: $record describes other content; left it out" >&2

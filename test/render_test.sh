@@ -371,13 +371,15 @@ echo "hunk-plan danger"
 # A repo of its own, with a stand-in for Vendis's bin/merge-danger that answers
 # only what hunk-plan asks. MD_CHECK picks the --check outcome, MD_DIGEST and
 # MD_DIGEST_COMMITTED the content digests, MD_FLOOR the fresh floor's file.
+# Every run appends its arguments to MD_RAN, so a test can tell it never ran.
 DANGER="$TMP/danger"
 mkdir -p "$DANGER/bin"
 git -C "$DANGER" init -q .
 DGITDIR=$(git -C "$DANGER" rev-parse --absolute-git-dir)
-export MD_FLOOR="$TMP/floor.json"
+export MD_FLOOR="$TMP/floor.json" MD_RAN="$TMP/md-ran"
 cat >"$TMP/merge-danger" <<'SH'
 #!/usr/bin/env bash
+echo "$*" >>"$MD_RAN"
 case "$*" in
   --check)
     case ${MD_CHECK:-current} in
@@ -437,6 +439,22 @@ assert_in 'no bin/merge-danger in this repo; nothing to cross-check' "$TMP/dange
 
 cp "$TMP/merge-danger" "$DANGER/bin/merge-danger"
 cp "$TMP/verdict.json" "$DGITDIR/merge-danger.json"
+
+# The script comes with the branch under review: it runs only once the repo's
+# own git config allows it, never because a global or passed-in setting does.
+danger_run
+assert_eq "$(cat "$TMP/danger.rc")" "0" "a bin/merge-danger the repo has not allowed: exits 0"
+assert_eq "$(cat "$TMP/danger.out")" "" "...prints no object"
+assert_in 'so it runs only once you allow it for this repo: git config hunk.mergeDanger true; no cross-check' \
+  "$TMP/danger.err" "...and says how to allow it"
+[[ -e $MD_RAN ]] && no "...and never runs it" || ok "...and never runs it"
+mkdir -p "$TMP/fakehome"
+printf '[hunk]\n\tmergeDanger = true\n' >"$TMP/fakehome/.gitconfig"
+HOME="$TMP/fakehome" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=hunk.mergeDanger GIT_CONFIG_VALUE_0=true danger_run
+assert_in 'git config hunk.mergeDanger true; no cross-check' "$TMP/danger.err" \
+  "a global or environment setting does not allow it"
+[[ -e $MD_RAN ]] && no "...and it still never runs" || ok "...and it still never runs"
+git -C "$DANGER" config hunk.mergeDanger true
 
 danger_run
 assert_eq "$(cat "$TMP/danger.rc")" "0" "a current verdict: exits 0"
@@ -560,6 +578,17 @@ assert_not_in 'STD-FIXED-1' "$DOUT" "fixed items never appear"
 MD_DIGEST=d2 danger_render >/dev/null
 assert_not_in 'Held for you' "$DOUT" "a record for other content is left out"
 assert_in 'review-record.json describes other content; left it out' "$TMP/drender.err" "...and stderr says so"
+
+git -C "$DANGER" config --unset hunk.mergeDanger
+rm -f "$MD_RAN"
+danger_render >/dev/null
+assert_not_in 'Settled by review' "$DOUT" "with the script no longer allowed, the record is left out"
+assert_in "review-record.json describes (bin/merge-danger comes with the checked-out branch" "$TMP/drender.err" \
+  "...and stderr says how to allow it"
+assert_in "cannot tell whether the plan's mergeDanger describes this content" "$TMP/drender.err" \
+  "...and that the verdict's content is unchecked"
+[[ -e $MD_RAN ]] && no "...and render never runs it" || ok "...and render never runs it"
+git -C "$DANGER" config hunk.mergeDanger true
 
 chmod -x "$DANGER/bin/merge-danger"
 danger_render >/dev/null
