@@ -153,11 +153,14 @@ function lineOf(anchor: SnapshotNoteLike["anchor"]): { side: "old" | "new" | nul
   return { side: null, line: null };
 }
 
-export function buildMarker(input: BuildMarkerInput): GoMarker {
+export type MarkerNotesInput = Pick<BuildMarkerInput, "snapshot" | "fileKeyPaths" | "notePaths" | "sentIds">;
+
+/** A snapshot's notes in hand-off form, each with its path resolved. Also what the notes journal records. */
+export function markerNotes(input: MarkerNotesInput): MarkerNote[] {
   const pathByKey = new Map(input.fileKeyPaths);
   for (const file of input.snapshot?.files ?? []) pathByKey.set(file.fileKey, file.path);
 
-  const notes: MarkerNote[] = (input.snapshot?.notes ?? []).map((note) => {
+  return (input.snapshot?.notes ?? []).map((note) => {
     const out: MarkerNote = {
       id: note.id,
       source: note.source,
@@ -177,7 +180,10 @@ export function buildMarker(input: BuildMarkerInput): GoMarker {
     if (note.createdAt !== undefined) out.createdAt = note.createdAt;
     return out;
   });
+}
 
+export function buildMarker(input: BuildMarkerInput): GoMarker {
+  const notes = markerNotes(input);
   const instruction = input.instruction?.trim() ?? "";
   return {
     version: 1,

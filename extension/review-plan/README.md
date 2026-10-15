@@ -291,3 +291,14 @@ an earlier plan refuses `S` and `A` and asks for `r` first. If one gets through
 anyway (an extension from before plan ids, or a write that lands mid-send),
 `wait` sets it aside as `stale.json` instead of delivering it, and a quit of
 such a window does not end the wait for the new plan.
+
+Notes are journaled next to them too, at
+`${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.notes.jsonl`,
+because Hunk keeps notes only in the running window
+([modem-dev/hunk#113](https://github.com/modem-dev/hunk/issues/113)). Each note
+you save is appended the moment you save it, from Hunk's `note_created` event.
+Hunk hands a snapshot of the whole review only to commands, never to events, so
+agent replies, resolutions and deletions are recorded as a snapshot whenever one
+of this extension's commands runs (`S`, `A`, `V`, `X`, `<`, `>`) and the notes
+changed. Every line carries the plan id and the window that wrote it.
+`hunk-plan notes` reads the journal back (see `journal.ts` for the format).

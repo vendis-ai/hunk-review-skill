@@ -10,6 +10,7 @@
 #   in-repo plan:    <repoRoot>/.hunk/review-plan.json
 #   viewed state:    ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.viewed.json
 #   loop hand-off:   ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.loop/ (go.ts)
+#   notes journal:   ${XDG_STATE_HOME:-$HOME/.local/state}/hunk/review-plan/<digest>.notes.jsonl (journal.ts)
 # <digest> is the first 16 hex chars of sha256(<absolute repo root path>),
 # byte-identical to plan.ts's repoDigest() -- hashed with `printf %s`, not
 # `echo`, so no trailing newline sneaks into the hashed bytes.
@@ -71,14 +72,28 @@ Commands:
                         fetched) -- one or the other, never both.
   clear [--yes]         Remove this repo's plan (both possible locations) and
                         its sibling .viewed.json, .sidecar.json, .html,
-                        .report/ and .loop/. Asks for confirmation unless --yes.
+                        .report/, .loop/ and .notes.jsonl. Asks for
+                        confirmation unless --yes.
   gc [--dry-run] [--yes] [--older-than <days>]
                         Sweep the whole state directory, not just this repo:
                         artifacts with no plan file, plans whose repo no longer
                         exists (resolved through repos.json), and plans older
                         than <days> (default 30). Shared assets go once the
-                        last report does. Asks for confirmation unless --yes.
+                        last report does. A notes journal with no plan goes
+                        only once it is older than <days> too, since notes
+                        saved without a plan are still notes. Asks for
+                        confirmation unless --yes.
   viewed                Print the viewed-state path.
+  notes [--json] [--all]
+                        Print the notes saved in Hunk for this repo, read from
+                        the notes journal the review-plan extension writes the
+                        moment each note is saved, so they outlive Hunk. The
+                        current plan's notes by default; --all for every plan.
+                        Per Hunk window, the newest snapshot of the review
+                        stands and notes saved after it are added; a note that
+                        snapshot no longer holds was deleted. Snapshots are
+                        taken when one of the extension's keys (S, A, V, X, <,
+                        >) runs, so an agent reply shows only once one has.
   wait [--timeout <seconds>]
                         Block until the reviewer hands the review back from
                         Hunk ("Send review to agent", S) or approves it
@@ -157,6 +172,13 @@ viewed_path_for() {
   local root="$1" d
   d=$(digest_for "$root")
   printf '%s/hunk/review-plan/%s.viewed.json' "$(state_dir)" "$d"
+}
+
+# The notes journal, matching journal.ts's journalPath().
+journal_path_for() {
+  local root="$1" d
+  d=$(digest_for "$root")
+  printf '%s/hunk/review-plan/%s.notes.jsonl' "$(state_dir)" "$d"
 }
 
 # The review loop's hand-off directory, matching go.ts's loopDir().
@@ -372,7 +394,7 @@ cmd_clear() {
   for target in \
     "$state_plan" "$in_repo_plan" "$viewed" \
     "$(html_path_for "$state_plan")" "$(sidecar_path_for "$state_plan")" \
-    "$(report_dir_for "$state_plan")" "$(loop_dir_for "$root")" \
+    "$(report_dir_for "$state_plan")" "$(loop_dir_for "$root")" "$(journal_path_for "$root")" \
     "$(html_path_for "$in_repo_plan")" "$(report_dir_for "$in_repo_plan")"; do
     [[ -e $target ]] && existing+=("$target")
   done
@@ -399,6 +421,79 @@ cmd_viewed() {
   local root
   root=$(repo_root)
   printf '%s\n' "$(viewed_path_for "$root")"
+}
+
+# ── notes journal ────────────────────────────────────────────────────────────
+#
+# The review-plan extension appends to <digest>.notes.jsonl (journal.ts): a
+# "created" line the moment a note is saved, and a "snapshot" line of the
+# whole review whenever one of its commands runs and the notes changed. This
+# reads it back, so notes outlive the Hunk window that held them.
+#
+# Per window, the newest snapshot stands and notes saved after it are added.
+# A note missing from that snapshot was deleted; one saved and deleted with no
+# snapshot in between stays, since Hunk reports no deletions. A line that does
+# not parse -- a write cut short by a crash -- is skipped, never fatal.
+NOTES_JQ='
+  split("\n") | map(fromjson?)
+  | map(select(type == "object" and .v == 1 and (.event == "created" or .event == "snapshot")))
+  | to_entries | map(.value + {seq: .key})
+  | (if $all then . else map(select((.planId // "") == $plan)) end)
+  | group_by(.window // "")
+  | map(
+      sort_by(.seq) as $es
+      | ([$es[] | select(.event == "snapshot")] | last) as $snap
+      | (if $snap == null then -1 else $snap.seq end) as $cut
+      | (if $snap == null then []
+         else [$snap.notes[]? | . + {planId: $snap.planId, window: $snap.window, recordedAt: $snap.at}] end) as $base
+      | ($base | map(.id)) as $ids
+      | $base + [ $es[] | select(.event == "created" and .seq > $cut)
+                  | .note + {planId, window, recordedAt: .at}
+                  | select(.id as $id | $ids | any(. == $id) | not) ]
+    )
+  | add // []
+  | sort_by([(.file // ""), (.line // 0), (.recordedAt // "")])
+'
+
+cmd_notes() {
+  local root journal plan plan_id all=false notes count
+  root=$(repo_root)
+  has_flag --all "$@" && all=true
+  command -v jq >/dev/null 2>&1 || die "jq is required to read the notes journal"
+  journal=$(journal_path_for "$root")
+  plan=$(resolve_plan "$root" 2>/dev/null) || plan=""
+  plan_id=$(plan_id_of "$plan")
+
+  if [[ -f $journal ]]; then
+    notes=$(jq -R -s --arg plan "$plan_id" --argjson all "$all" "$NOTES_JQ" "$journal")
+  else
+    notes='[]'
+  fi
+  count=$(printf '%s' "$notes" | jq 'length')
+
+  if has_flag --json "$@"; then
+    jq -n --arg journal "$journal" --arg plan "$plan_id" --argjson all "$all" --argjson notes "$notes" \
+      '{journal: $journal, planId: (if $all or $plan == "" then null else $plan end), notes: $notes}'
+    return 0
+  fi
+
+  if [[ $count -eq 0 ]]; then
+    if [[ -f $journal ]]; then
+      local scope="for this plan"
+      $all && scope="for $root"
+      echo "$PROG: no notes recorded $scope ($journal)" >&2
+    else
+      echo "$PROG: no notes journal for $root yet ($journal)" >&2
+    fi
+    return 0
+  fi
+
+  echo "$count note$([[ $count -eq 1 ]] || echo s) from $journal"
+  printf '%s' "$notes" | jq -r '.[] |
+    "",
+    "\(.file // "(file unknown)"):\(.line // "?")\(if .side then " (" + .side + ")" else "" end)  [\(.source // "user")\(if .parentId then ", reply to " + .parentId else "" end)\(if .resolution and .resolution != "active" then ", " + .resolution else "" end)]",
+    ((.summary // "") | split("\n") | map("  " + .) | join("\n")),
+    (if .rationale then ((.rationale | split("\n") | map("  " + .) | join("\n"))) else empty end)'
 }
 
 # ── report rendering ─────────────────────────────────────────────────────────
@@ -1152,7 +1247,7 @@ cmd_wait() {
 # Remove every artifact belonging to one digest.
 gc_remove_family() {
   local base="$1" dry="$2" target
-  for target in "$base.json" "$base.html" "$base.viewed.json" "$base.sidecar.json"; do
+  for target in "$base.json" "$base.html" "$base.viewed.json" "$base.sidecar.json" "$base.notes.jsonl"; do
     [[ -e $target ]] || continue
     if [[ $dry == 1 ]]; then echo "  would remove $target"; else rm -f "$target"; fi
   done
@@ -1195,6 +1290,17 @@ cmd_gc() {
     doomed+=("$base")
     reasons+=("orphan: no plan file")
   done
+
+  # A notes journal is the exception: Hunk journals notes with no plan at all,
+  # and those are the reviewer's work. Without a plan it goes only once it is
+  # as old as a plan would have to be.
+  while IFS= read -r f; do
+    [[ -n $f ]] || continue
+    base="${f%.notes.jsonl}"
+    [[ -f "$base.json" ]] && continue
+    doomed+=("$base")
+    reasons+=("orphan notes journal older than $days days")
+  done < <(find "$sdir" -maxdepth 1 -name '*.notes.jsonl' -mtime "+$days" 2>/dev/null)
 
   # Pass 2: the manifest says which repo a digest came from, so a deleted repo
   # becomes collectable rather than an unreadable hash.
@@ -1292,6 +1398,7 @@ main() {
     gc) cmd_gc "$@" ;;
     clear) cmd_clear "$@" ;;
     viewed) cmd_viewed "$@" ;;
+    notes) cmd_notes "$@" ;;
     wait) cmd_wait "$@" ;;
     -h | --help) usage ;;
     "")

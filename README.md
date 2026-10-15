@@ -249,8 +249,14 @@ nothing wakes a sub-agent once it has returned.
 ### Keeping your notes
 
 Hunk keeps notes only in the running window
-([modem-dev/hunk#113](https://github.com/modem-dev/hunk/issues/113)). Quit it and they are gone,
-your notes and the agent's replies alike. A reload keeps them, with one exception that costs you
+([modem-dev/hunk#113](https://github.com/modem-dev/hunk/issues/113)). Quit it and the window
+loses them, your notes and the agent's replies alike. The `review-plan` extension keeps a copy:
+it writes each note to a journal on disk the moment you save it, and records the agent's replies
+and your deletions whenever you press one of its keys (`S`, `A`, `V`, `X`, `<`, `>`).
+`hunk-plan notes` prints them back after Hunk is gone (`--json` for an agent, `--all` for earlier
+plans too). Putting them back into a new Hunk window is not built yet.
+
+A reload keeps the notes in the window, with one exception that costs you
 the session: a reload that drops a file carrying one of the agent's replies disconnects the window
 from Hunk's daemon ([modem-dev/hunk#1138](https://github.com/modem-dev/hunk/issues/1138); an open
 fix is [#1131](https://github.com/modem-dev/hunk/pull/1131)). Your own notes don't trigger it. The
@@ -267,7 +273,8 @@ Three habits keep you clear of it while notes are open:
 - **Leave `--watch` off and press `r` yourself** once the agent says it is done. `--watch`
   reloads in the middle of the agent's edits, while a file it is reverting may still carry its
   reply.
-- **Read the replies before you quit.** That window is the only copy.
+- **Read the replies before you quit.** The journal holds a reply only from the last time you
+  pressed one of the extension's keys, so the window is the only full copy.
 
 A fix that reverts a whole file to its base content drops that file on any target. The notes
 skill removes its own replies on such a file first and answers in the chat instead, which keeps
@@ -294,11 +301,13 @@ answers in the chat and the writeup.
 
 Plans live outside your repos, in `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/`, keyed by
 a hash of the repo path. Each review leaves a `<digest>.json` plan, a `<digest>.report/` directory
-of the agent's prose, the rendered `<digest>.html`, and a `<digest>.loop/` directory for the
-hand-off between Hunk and a waiting agent, plus a shared copy of the two vendored libraries.
+of the agent's prose, the rendered `<digest>.html`, a `<digest>.loop/` directory for the
+hand-off between Hunk and a waiting agent, and the `<digest>.notes.jsonl` notes journal, plus a
+shared copy of the two vendored libraries. `gc` removes a notes journal with no plan only once it
+is as old as `--older-than`, since notes saved without a plan are still your notes.
 
 ```sh
-hunk-plan clear              # this repo's plan, report and rendered page
+hunk-plan clear              # this repo's plan, report, rendered page and notes journal
 hunk-plan gc --dry-run       # everything collectable, machine-wide
 hunk-plan gc                 # ...and remove it
 ```

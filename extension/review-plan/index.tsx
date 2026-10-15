@@ -28,6 +28,7 @@ import { buildCollapsedLayout, rawFallbackReason, type CollapsedFile } from "./c
 import {
   buildMarker,
   deliveredIds,
+  markerNotes,
   MODE_CHOICES,
   markerPath,
   modeFromLabel,
@@ -42,7 +43,18 @@ import {
   writeJsonAtomic,
   type GoMode,
   type MarkerKind,
+  type SnapshotLike,
 } from "./go";
+import {
+  appendEntry,
+  createdEntry,
+  journalPath,
+  snapshotEntry,
+  snapshotKey,
+  type CreatedEntry,
+  type JournalContext,
+  type SnapshotEntry,
+} from "./journal";
 import {
   anchorFileScopedAnnotations,
   filterAnnotationsInHunks,
@@ -340,7 +352,14 @@ interface LoopState {
   /** The plan id that window.json records, and when this window first opened the repo. */
   windowPlanId: string | null;
   windowStartedAt: Date | null;
+  /** What the last journaled snapshot said, so an unchanged review is not journaled again. */
+  journalKey: string;
+  /** Whether the reviewer has already been told the journal cannot be written. */
+  journalWarned: boolean;
 }
+
+/** Which Hunk window wrote a journal line: two windows on one repo hold different notes. */
+const WINDOW_TAG = `${process.pid}@${new Date().toISOString()}`;
 
 const loop: LoopState = {
   fileKeyPaths: new Map(),
@@ -351,7 +370,53 @@ const loop: LoopState = {
   windowRepo: null,
   windowPlanId: null,
   windowStartedAt: null,
+  // A fresh window holds no notes, so an empty snapshot is only worth a line
+  // once notes existed and were all deleted.
+  journalKey: snapshotKey([]),
+  journalWarned: false,
 };
+
+function journalContext(repoRoot: string): JournalContext {
+  return { now: new Date(), planId: loop.planId, head: readHead(repoRoot), window: WINDOW_TAG };
+}
+
+/** Append one journal line; on the first failure, tell the reviewer their notes are not being kept. */
+function journal(
+  repoRoot: string,
+  entry: CreatedEntry | SnapshotEntry,
+  notify: (message: string, level: "warning") => void
+): boolean {
+  const target = journalPath(repoRoot, process.env);
+  if (appendEntry(target, entry)) return true;
+  if (!loop.journalWarned) {
+    loop.journalWarned = true;
+    notify(`Could not write the notes journal at ${target}; quitting Hunk will lose your notes.`, "warning");
+  }
+  return false;
+}
+
+/**
+ * Journal the review as this command sees it, when it changed since the last
+ * snapshot. Commands are the only place Hunk hands out a snapshot, and the
+ * snapshot is what records agent replies, resolutions and deleted notes.
+ */
+function journalSnapshot(ctx: ExtensionCommandContext, trigger: string, snapshot?: SnapshotLike | null): void {
+  const repoRoot = store.getSnapshot().repoRoot;
+  const seen = snapshot === undefined ? ctx.review.snapshot() : snapshot;
+  if (!repoRoot || !seen) return;
+  loop.fileKeyPaths = rememberFileKeys(loop.fileKeyPaths, seen);
+  const notes = markerNotes({
+    snapshot: seen,
+    fileKeyPaths: loop.fileKeyPaths,
+    notePaths: loop.notePaths,
+    sentIds: loop.sentIds,
+  });
+  const key = snapshotKey(notes);
+  if (key === loop.journalKey) return;
+  if (journal(repoRoot, snapshotEntry(notes, trigger, journalContext(repoRoot)), (m, l) => ctx.notify(m, l))) {
+    loop.journalKey = key;
+  }
+}
 
 /**
  * Tell `hunk-plan wait` a Hunk window has this repo open, and which plan it
@@ -417,6 +482,7 @@ function deliver(ctx: ExtensionCommandContext, kind: MarkerKind, mode: GoMode | 
     return;
   }
   loop.pendingIds = deliveredIds(marker);
+  journalSnapshot(ctx, kind === "go" ? "sendToAgent" : "approveReview", snapshot);
 
   if (kind === "approve") {
     ctx.notify("Approved. A waiting agent stops here.");
@@ -806,12 +872,14 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     // Reviewing a file is the moment its diff stops being worth the space,
     // so marking it collapses it and unmarking it brings the diff back.
     setSelectedFileCollapsed(ctx, status === "viewed");
+    journalSnapshot(ctx, "toggleViewed");
   });
 
   hunk.registerCommand({ id: "toggleCollapsed", title: "Collapse/expand file diff", key: "X" }, (ctx) => {
     const file = ctx.selection.file;
     if (!file) return;
     setSelectedFileCollapsed(ctx, !store.getSnapshot().collapsedFiles.has(file.path));
+    journalSnapshot(ctx, "toggleCollapsed");
   });
 
   hunk.registerCommand({ id: "toggleGroup", title: "Collapse/expand group", key: "Z" }, (ctx) => {
@@ -828,10 +896,12 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
 
   hunk.registerCommand({ id: "nextGroup", title: "Next group", key: ">" }, (ctx) => {
     moveToAdjacentGroup(ctx, 1);
+    journalSnapshot(ctx, "nextGroup");
   });
 
   hunk.registerCommand({ id: "previousGroup", title: "Previous group", key: "<" }, (ctx) => {
     moveToAdjacentGroup(ctx, -1);
+    journalSnapshot(ctx, "previousGroup");
   });
 
   hunk.registerCommand({ id: "collapseViewedGroups", title: "Collapse fully reviewed groups" }, (ctx) => {
@@ -883,8 +953,12 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
 
   hunk.on("changeset_loaded", () => resyncAfterChangeset());
   hunk.on("session_reload", () => resyncAfterChangeset());
-  hunk.on("note_created", ({ note }) => {
+  hunk.on("note_created", ({ note }, ctx) => {
     loop.notePaths.set(note.id, note.filePath);
+    const repoRoot = store.getSnapshot().repoRoot;
+    if (!repoRoot) return;
+    const entry = createdEntry(note, journalContext(repoRoot));
+    if (entry) journal(repoRoot, entry, (m, l) => ctx.notify(m, l));
   });
   hunk.on("shutdown", () => {
     markWindowClosed();

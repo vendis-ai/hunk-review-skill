@@ -159,7 +159,13 @@ the URL from being linked too.
   stays detached afterwards, so do not suggest it and do not retry in a loop. Finish from the
   notes you already read: make the fixes, put every reply in the chat (and in the writeup's
   `.notes.md` files, if there is a writeup), and tell the user the session dropped. If it
-  dropped before you read the notes, ask the user to paste them from the window. Quitting Hunk
-  to get a fresh session loses them.
+  dropped before you read the notes, run `hunk-plan notes --json`: the review-plan extension
+  journals every note the moment it is saved, so the user's notes are there even when no session
+  answers. Its notes carry `id`, `source`, `file`, `side`, `line` and `summary` like a
+  hand-off's, but no `"new"`: treat a user note with no agent reply (`parentId`) as open. If the
+  journal is missing or empty too, ask the user to paste the notes from the window.
+- Hunk was quit with notes still in it, so `comment list` finds no session. Read them with
+  `hunk-plan notes --json` (`--all` if the plan was rewritten since) and work from that. Replies
+  go in the chat and the writeup, since no window holds the notes any more.
 - `hunk: command not found` — Hunk is installed via mise (`aqua:modem-dev/hunk`). Say so rather
   than guessing at an install path.

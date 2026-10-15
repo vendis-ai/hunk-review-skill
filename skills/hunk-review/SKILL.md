@@ -474,6 +474,7 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     hunk-plan clear      [--yes]
     hunk-plan gc         [--dry-run] [--yes] [--older-than <days>]
     hunk-plan wait       [--timeout <seconds>]
+    hunk-plan notes      [--json] [--all]
 
 ## Failure modes
 
