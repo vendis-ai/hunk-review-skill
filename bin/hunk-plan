@@ -35,7 +35,9 @@ Commands:
                         a "groups" array), and write it atomically to the
                         resolved path (default: state-dir path). Each write
                         stamps a fresh "planId" into the stored plan, which
-                        ties review-loop hand-offs to it (see wait). Warns on
+                        ties review-loop hand-offs to it (see wait), and the
+                        "head" commit and "branch" it was written on (see
+                        list). Warns on
                         stderr, after writing, about a one-way group ranked
                         Skim, an unknown "door" value, a malformed
                         "blastRadius", and a "mergeDanger" that is malformed,
@@ -104,6 +106,22 @@ Commands:
                         snapshot no longer holds was deleted. Snapshots are
                         taken when one of the extension's keys (S, A, V, X, <,
                         >) runs, so an agent reply shows only once one has.
+  list [--json] [--here]
+                        One row per review plan in the state directory, newest
+                        first: repo, branch, plan age, commits the branch moved
+                        since the plan ("rebased" when the plan's commit is no
+                        longer an ancestor), the Hunk window (open, closed, or
+                        "earlier" when it still shows an earlier plan), a live
+                        Hunk session, open/all user notes, viewed marks against
+                        the plan's files, and sends to the agent (A: approved).
+                        Viewed is a lower bound: a reviewer reads files without
+                        marking them, and a mark left on a file that changed
+                        since still counts. --here lists only this repo's plan,
+                        found as show finds it. --json adds the plan's files,
+                        the viewed ones, the notes sent, the last hand-off, the
+                        door calls, the merge-danger verdict and the writeup;
+                        a value nothing on disk records is null. Plans written
+                        before "head" was stamped show "?" for it.
   danger [--in-repo] [--allowed]
                         Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
@@ -268,12 +286,21 @@ cmd_write() {
   # A fresh id on every write, replacing any the input carried. Hand-offs from
   # Hunk carry the id of the plan their window showed, so `wait` can tell an
   # answer to this plan from one a still-open window sends for an earlier
-  # review: the loop directory is keyed by repo, not by review.
-  local stamped
+  # review: the loop directory is keyed by repo, not by review. The commit and
+  # branch the plan was written on are stamped the same way, so `list` can say
+  # how far the branch moved since; an unborn HEAD or a detached one leaves
+  # the field out rather than guessing.
+  local stamped head branch
+  head=$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null) || head=""
+  branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null) || branch=""
   stamped=$(mktemp "$dir/.review-plan.XXXXXX")
-  if ! jq --arg id "$(new_plan_id)" '.planId = $id' "$tmp" >"$stamped"; then
+  if ! jq --arg id "$(new_plan_id)" --arg head "$head" --arg branch "$branch" '
+    .planId = $id
+    | (if $head == "" then del(.head) else .head = $head end)
+    | (if $branch == "" then del(.branch) else .branch = $branch end)
+  ' "$tmp" >"$stamped"; then
     rm -f "$tmp" "$stamped"
-    die "failed to stamp the plan id"
+    die "failed to stamp the plan id, head and branch"
   fi
   rm -f "$tmp"
 
@@ -528,6 +555,274 @@ cmd_notes() {
     "\(.file // "(file unknown)"):\(.line // "?")\(if .side then " (" + .side + ")" else "" end)  [\(.source // "user")\(if .parentId then ", reply to " + .parentId else "" end)\(if .resolution and .resolution != "active" then ", " + .resolution else "" end)]",
     ((.summary // "") | split("\n") | map("  " + .) | join("\n")),
     (if .rationale then ((.rationale | split("\n") | map("  " + .) | join("\n"))) else empty end)'
+}
+
+# ── review list ──────────────────────────────────────────────────────────────
+#
+# `list` says which reviews exist and how far each got, from the state
+# directory alone: one row per plan. A row reads only what the extension and
+# this script already keep (the plan, its viewed marks, the loop directory and
+# the notes journal) plus git in the repo the manifest names. A review whose
+# worktree is gone still lists; what only git could say is null.
+
+# A plan's journal, summed up for its row: user notes, agent replies, the user
+# notes still open, and what reached the agent. A user note is open while it
+# is active and unanswered. hunk-handle-notes answers with `comment add` at the
+# note's file and line, which sets no parentId, so an agent note answers it
+# when it names it as parent or sits on the same file, side and line and is no
+# older. Sends are this plan's "sendToAgent" snapshots; the notes sent are the
+# distinct user notes they held.
+LIST_JOURNAL_JQ='. as $raw
+  | ($raw | '"$NOTES_JQ"') as $notes
+  | ($raw | split("\n") | map(fromjson?)
+     | map(select(type == "object" and .v == 1 and .event == "snapshot"
+                  and (.planId // "") == $plan))) as $snaps
+  | [$notes[] | select(.source == "agent")] as $agent
+  | [$notes[] | select((.source // "user") == "user")] as $user
+  | [$snaps[] | select(.trigger == "sendToAgent")] as $sends
+  | def answered: . as $n | (.createdAt // .recordedAt // "") as $at
+      | any($agent[]; .parentId == $n.id
+          or (.file == $n.file and .side == $n.side and .line == $n.line
+              and ((.createdAt // .recordedAt // "") >= $at)));
+    {
+      user: ($user | length),
+      agent: ($agent | length),
+      open: ([$user[] | select((.resolution // "active") == "active") | select(answered | not)] | length),
+      sends: ($sends | length),
+      notesSent: ([$sends[] | .notes[]? | select((.source // "user") == "user") | .id] | unique | length),
+      approved: any($snaps[]; .trigger == "approveReview")
+    }'
+
+# One row. Every input is a file read here or a value git gave; jq only
+# assembles them, so a missing or unreadable file is null in the row, never an
+# error. Only the plan itself must parse. The journal is summed up in the same
+# call, with the $plan and $all that NOTES_JQ reads bound to this plan.
+LIST_ROW_JQ='
+  def nn: if . == "" then null else . end;
+  def doc: if . == "" then null else (fromjson? // null) end;
+  def door_ok: .door == "one-way" or .door == "two-way";
+  $planId as $plan | false as $all
+  | ($planDoc[0]) as $p
+  | [$p.groups[]? | select(type == "object")] as $groups
+  | ([$groups[] | .files[]? | select(type == "object") | .path | strings] | unique) as $files
+  | ($viewedRaw | doc | .entries? // {} | if type == "object" then . else {} end) as $marks
+  | ($lastRaw | doc | if type == "object" and (.kind | type) == "string" then . else null end) as $hand
+  | (if $journalRaw == "" then null else ($journalRaw | '"$LIST_JOURNAL_JQ"') end) as $journal
+  | {
+      key: $key,
+      repo: ($root | nn),
+      repoExists: $exists,
+      branch: (($branch | nn) // ($p.branch | strings | nn) // null),
+      plan: $planPath,
+      planId: ($planId | nn),
+      writtenAt: (
+        ($planId | capture("^(?<y>[0-9]{4})(?<m>[0-9]{2})(?<d>[0-9]{2})T(?<H>[0-9]{2})(?<M>[0-9]{2})(?<S>[0-9]{2})Z")?
+         | "\(.y)-\(.m)-\(.d)T\(.H):\(.M):\(.S)Z")
+        // (if $mtime == "" then null else ($mtime | tonumber | todate) end)),
+      head: {plan: (($p.head | strings | nn) // null), now: ($now | nn), moved: $moved, rebased: $rebased},
+      window: (if $winState == "" then null
+               else {state: $winState, planId: ($winId | nn), showsPlan: $winShows} end),
+      session: (if $sessions == null or $root == "" then null
+                else any($sessions[]; . == $root) end),
+      notes: $journal,
+      lastHandoff: (if $hand == null then null else {
+        kind: $hand.kind, mode: ($hand.mode // null), createdAt: ($hand.createdAt // null),
+        notes: ([$hand.notes[]?] | length),
+        forPlan: (if $planId == "" then null else ($hand.planId // "") == $planId end)
+      } end),
+      viewed: {marked: ([$files[] | select($marks[.] != null)] | length), of: ($files | length)},
+      planFiles: $files,
+      viewedFiles: ($marks | keys),
+      groups: ($groups | length),
+      doors: ([$groups[] | select(door_ok)] | length),
+      oneWay: ([$groups[] | select(.door == "one-way")] | length),
+      mergeDanger: (if ($p.mergeDanger | type) == "object" then {
+        door: ($p.mergeDanger.door // null), depth: ($p.mergeDanger.depth // null),
+        disagreements: ([$p.mergeDanger.disagreements[]?] | length)
+      } else null end),
+      writeup: {html: ($html | nn), overview: $overview, glossary: $glossary}
+    }
+'
+
+# The text table, one line per row. Every field is non-empty: `read` with
+# IFS=$'\t' collapses a run of tabs, so an empty field would shift the rest.
+LIST_TEXT_JQ='
+  def ago: if . == null then "?" else (now - fromdate) as $s
+    | if $s < 3600 then "\($s / 60 | floor)m"
+      elif $s < 172800 then "\($s / 3600 | floor)h"
+      else "\($s / 86400 | floor)d" end end;
+  .[] | select(.error | not)
+  | [ (.writtenAt | ago),
+      (if .repo == null then "? " + .key
+       elif .repoExists then .repo | split("/") | last
+       else (.repo | split("/") | last | .[0:25]) + " (gone)" end),
+      (.branch // "-"),
+      (if .head.rebased == true then "rebased"
+       elif .head.moved != null then "+\(.head.moved)" else "?" end),
+      (if .window == null then "-"
+       elif .window.state == "open" and .window.showsPlan == false then "earlier"
+       else .window.state end),
+      (if .session == true then "yes" elif .session == false then "no" else "?" end),
+      (if .notes == null then "-" else "\(.notes.open)/\(.notes.user)" end),
+      "\(.viewed.marked)/\(.viewed.of)",
+      ( ([(.notes.sends // 0),
+          (if .lastHandoff != null and .lastHandoff.kind == "go" and .lastHandoff.forPlan != false then 1 else 0 end)]
+         | max | tostring)
+        + (if .notes.approved == true
+              or (.lastHandoff.kind == "approve" and .lastHandoff.forPlan != false)
+           then " A" else "" end) ) ]
+  | @tsv
+'
+
+# list_row <plan> <key> <root> <live session roots as JSON, or null>: one
+# review as JSON. <root> is empty when the manifest does not know the plan's
+# repo. Status 1: the plan does not parse. Two jq calls per row: a list over
+# dozens of plans would otherwise spend its time starting processes.
+list_row() {
+  local plan="$1" key="$2" root="$3" sessions="$4" sdir loop meta plan_id head closed pid wid
+  local exists=false now="" branch="" moved=null rebased=null state="" shows=true mtime="" html report rc
+  local viewed=/dev/null last=/dev/null journal=/dev/null overview=false glossary=false win=/dev/null
+  sdir="$(state_dir)/hunk/review-plan"
+  loop="$sdir/$key.loop"
+  [[ -f $loop/window.json ]] && win="$loop/window.json"
+
+  # The plan's id and head, and the window's, in one read. `|` separates the
+  # fields: unlike a tab it never collapses, so an empty one stays in place.
+  meta=$(jq -rn '[inputs] as [$p, $w]
+    | [ (($p.planId | strings) // ""), (($p.head | strings) // ""),
+        (($w.closedAt // "") | tostring), (($w.pid // "") | tostring), (($w.planId | strings) // "") ]
+    | join("|")' "$plan" "$win" 2>/dev/null) || return 1
+  IFS='|' read -r plan_id head closed pid wid <<<"$meta"
+  [[ -n $plan_id ]] || mtime=$(mtime_of "$plan") || mtime=""
+
+  if [[ -n $root && -e $root/.git ]]; then
+    exists=true
+    branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null) || branch=""
+    now=$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null) || now=""
+    if [[ -n $head && -n $now ]]; then
+      # 0: the plan's commit is an ancestor; 1: it is not; anything else: git
+      # no longer has it. Either of the last two means the branch was rewritten.
+      rc=0
+      git -C "$root" merge-base --is-ancestor "$head" "$now" 2>/dev/null || rc=$?
+      if [[ $rc -eq 0 || $rc -eq 1 ]]; then
+        moved=$(git -C "$root" rev-list --count "$head..$now" 2>/dev/null) || moved=null
+      fi
+      if [[ $rc -eq 0 ]]; then rebased=false; else rebased=true; fi
+    fi
+  fi
+
+  # The window as window_closed reads it: closed once it says so, or once its
+  # process is gone. Whether it shows this plan follows for_earlier_plan: the
+  # ids decide once the plan has one, file times before that.
+  if [[ $win != /dev/null ]]; then
+    state=open
+    if [[ -n $closed ]] || { [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; }; then
+      state=closed
+    fi
+    if [[ -n $plan_id ]]; then
+      [[ $wid == "$plan_id" ]] || shows=false
+    elif [[ $plan -nt $win ]]; then
+      shows=false
+    fi
+  fi
+
+  [[ -f $sdir/$key.notes.jsonl ]] && journal="$sdir/$key.notes.jsonl"
+  [[ -f $sdir/$key.viewed.json ]] && viewed="$sdir/$key.viewed.json"
+  [[ -f $loop/last.json ]] && last="$loop/last.json"
+  html=$(html_path_for "$plan")
+  [[ -f $html ]] || html=""
+  report=$(report_dir_for "$plan")
+  [[ -s $report/_overview.md ]] && overview=true
+  [[ -s $report/_glossary.md ]] && glossary=true
+
+  jq -cn --slurpfile planDoc "$plan" \
+    --rawfile viewedRaw "$viewed" --rawfile lastRaw "$last" --rawfile journalRaw "$journal" \
+    --arg key "$key" --arg root "$root" --argjson exists "$exists" --arg branch "$branch" \
+    --arg planPath "$plan" --arg planId "$plan_id" --arg mtime "$mtime" --arg now "$now" \
+    --argjson moved "$moved" --argjson rebased "$rebased" \
+    --arg winState "$state" --arg winId "$wid" --argjson winShows "$shows" \
+    --argjson sessions "$sessions" --arg html "$html" \
+    --argjson overview "$overview" --argjson glossary "$glossary" "$LIST_ROW_JQ"
+}
+
+cmd_list() {
+  local sdir mf root="" plan key r sessions=null rows="" row here=false
+  command -v jq >/dev/null 2>&1 || die "jq is required to list reviews"
+  sdir="$(state_dir)/hunk/review-plan"
+  mf=$(manifest_path)
+  local -a plans=() keys=() roots=()
+
+  if has_flag --here "$@"; then
+    here=true
+    root=$(repo_root)
+    plan=$(resolve_plan "$root" 2>/dev/null) || plan=""
+    if [[ -n $plan ]]; then
+      plans+=("$plan")
+      keys+=("$(digest_for "$root")")
+      roots+=("$root")
+    fi
+  else
+    # The manifest, read once as "<key>|<root>" lines and looked up in bash.
+    local manifest="" nl=$'\n' rest
+    [[ -f $mf ]] && manifest=$(jq -r 'to_entries[] | select(.value | type == "string")
+      | "\(.key)|\(.value)"' "$mf" 2>/dev/null) || manifest=""
+    manifest="$nl$manifest$nl"
+    for plan in "$sdir"/*.json; do
+      [[ -f $plan ]] || continue
+      key=$(basename "$plan" .json)
+      [[ $key =~ ^[0-9a-f]{16}$ ]] || continue
+      rest=${manifest#*"$nl$key|"}
+      if [[ $rest != "$manifest" ]]; then r=${rest%%"$nl"*}; else r=""; fi
+      plans+=("$plan")
+      keys+=("$key")
+      roots+=("$r")
+    done
+  fi
+
+  # One call for every row, kept to the repo roots: a session also lists its
+  # files, which every row would otherwise parse again. Without hunk, or when
+  # the daemon does not answer, "live session" stays unknown rather than "no".
+  if [[ ${#plans[@]} -gt 0 ]] && command -v hunk >/dev/null 2>&1; then
+    sessions=$(hunk session list --json 2>/dev/null |
+      jq -c 'if (.sessions | type) == "array" then [.sessions[] | .repoRoot | strings] else null end' \
+        2>/dev/null) || sessions=null
+    [[ -n $sessions ]] || sessions=null
+  fi
+
+  local i
+  for ((i = 0; i < ${#plans[@]}; i++)); do
+    if ! row=$(list_row "${plans[i]}" "${keys[i]}" "${roots[i]}" "$sessions") || [[ -z $row ]]; then
+      row=$(jq -cn --arg k "${keys[i]}" --arg p "${plans[i]}" --arg r "${roots[i]}" \
+        '{key: $k, repo: (if $r == "" then null else $r end), plan: $p, error: "unreadable plan"}')
+    fi
+    rows+="$row"$'\n'
+  done
+  rows=$(printf '%s' "$rows" | jq -s -c 'sort_by(.writtenAt // "") | reverse')
+
+  if has_flag --json "$@"; then
+    jq -n --arg dir "$sdir" --argjson reviews "$rows" '{stateDir: $dir, reviews: $reviews}'
+    return 0
+  fi
+
+  if [[ $rows == "[]" ]]; then
+    if $here; then
+      echo "$PROG: no review plan for $root" >&2
+    else
+      echo "$PROG: no review plans in $sdir" >&2
+    fi
+    return 0
+  fi
+
+  local age repo branch head window live notes viewed sends
+  printf '%-4s  %-32s  %-26s  %-7s  %-7s  %-4s  %-5s  %-7s  %s\n' \
+    AGE REPO BRANCH HEAD WINDOW LIVE NOTES VIEWED SENDS
+  while IFS=$'\t' read -r age repo branch head window live notes viewed sends; do
+    printf '%-4s  %-32.32s  %-26.26s  %-7s  %-7s  %-4s  %-5s  %-7s  %s\n' \
+      "$age" "$repo" "$branch" "$head" "$window" "$live" "$notes" "$viewed" "$sends"
+  done < <(printf '%s' "$rows" | jq -r "$LIST_TEXT_JQ")
+  printf '%s' "$rows" | jq -r '.[] | select(.error) | "\(.plan): \(.error)"' | while IFS= read -r row; do
+    echo "$PROG: $row" >&2
+  done
 }
 
 # ── report rendering ─────────────────────────────────────────────────────────
@@ -1883,6 +2178,7 @@ main() {
     clear) cmd_clear "$@" ;;
     viewed) cmd_viewed "$@" ;;
     notes) cmd_notes "$@" ;;
+    list) cmd_list "$@" ;;
     danger) cmd_danger "$@" ;;
     wait) cmd_wait "$@" ;;
     -h | --help) usage ;;

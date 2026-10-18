@@ -41,6 +41,9 @@ interface ReviewPlan {
   label?: string; // informational only
   summary?: string; // one-line thesis for the whole changeset
   mergeDanger?: MergeDanger; // `hunk-plan danger` output plus reasons; writeup only, never in the TUI
+  planId?: string; // stamped by `hunk-plan write`, never authored: ties hand-offs to this plan
+  head?: string; // stamped by `hunk-plan write`: the commit the plan was written on (`hunk-plan list`)
+  branch?: string; // stamped by `hunk-plan write`: the branch it was written on
   groups: PlanGroup[];
 }
 

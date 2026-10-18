@@ -312,6 +312,9 @@ answers in the chat and the writeup.
 | `extension/review-plan/` | The Hunk extension that renders the plan as grouped, ordered review. |
 | `extension/copy-path/` | A Hunk extension that copies the selected file's path, or an `@path#Lx` reference. |
 | `test/render_test.sh` | Smoke test for the renderer and the state-directory cleanup. |
+| `test/wait_test.sh` | Tests for the review loop's `hunk-plan wait`. |
+| `test/notes_test.sh` | Tests for reading the notes journal back with `hunk-plan notes`. |
+| `test/list_test.sh` | Tests for `hunk-plan list` and the head and branch `write` stamps. |
 | `test/keymap_check.sh` | Fails when a new Hunk release claims a key one of the extensions binds. |
 | `docs/img/` | The screenshots above. |
 
@@ -324,7 +327,14 @@ hand-off between Hunk and a waiting agent, and the `<digest>.notes.jsonl` notes 
 shared copy of the two vendored libraries. `gc` removes a notes journal with no plan only once it
 is as old as `--older-than`, since notes saved without a plan are still your notes.
 
+`hunk-plan list` reads them back as one row per review, newest first. A row shows the branch, how
+many commits it moved since the plan, whether a Hunk window or session is open on it, your open
+notes, the files you marked viewed, and what you sent to the agent. `--json` adds the door calls,
+the merge-danger verdict and the writeup, and `--here` keeps to the current repo. A review whose
+worktree is gone still lists.
+
 ```sh
+hunk-plan list               # every review on this machine
 hunk-plan clear              # this repo's plan, report, rendered page and notes journal
 hunk-plan gc --dry-run       # everything collectable, machine-wide
 hunk-plan gc                 # ...and remove it
