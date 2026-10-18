@@ -198,8 +198,11 @@ the URL from being linked too.
   dropped before you read the notes, run `hunk-plan notes --json`: the review-plan extension
   journals every note the moment it is saved, so the user's notes are there even when no session
   answers. Its notes carry `id`, `source`, `file`, `side`, `line` and `summary` like a
-  hand-off's, but no `"new"`: treat a user note with no agent reply (`parentId`) as open. If the
-  journal is missing or empty too, ask the user to paste the notes from the window.
+  hand-off's, but no `"new"`. Treat a user note as open unless an agent note answers it: one
+  whose `parentId` is the note's `id`, or one on the same `file`, `side` and `line` that is no
+  older (`createdAt`, else `recordedAt`). Replies from `comment add` carry no `parentId`, so
+  most answers match by place. If the journal is missing or empty too, ask the user to paste the
+  notes from the window.
 - Hunk was quit with notes still in it, so `comment list` finds no session. Read them with
   `hunk-plan notes --json` (`--all` if the plan was rewritten since) and work from that. Replies
   go in the chat and the writeup, since no window holds the notes any more.
