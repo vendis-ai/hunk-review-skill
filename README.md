@@ -125,8 +125,10 @@ disagreement you settle with a note in Hunk becomes one `bin/merge-danger --fina
 which whoever runs the review loop records. When the repo's review gate left a record for this
 content, the TL;DR also lists what it held for you, and a closed block lists what it waived or
 accepted as known. All of it is advice: nothing here blocks a review, a write or an approval.
-`bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only once you allow
-it for that repo with `git config hunk.mergeDanger true`. A global setting does not count.
+`bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only when you allowed
+its exact content for that repo. Read the script, then allow it with
+`git config --local --add hunk.mergeDanger <blob id>`; `hunk-plan danger` prints the id. A branch
+that changes the script needs a new allow. A global setting does not count, and neither does `true`.
 
 The prose follows short-sentence rules taken from ASD-STE100: one fact per sentence, the small
 words kept, the effect before the mechanism. `hunk-plan render` names every sentence over 25

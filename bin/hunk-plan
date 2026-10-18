@@ -107,9 +107,10 @@ Commands:
   danger [--in-repo]    Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
                         bin/merge-danger (Vendis). That script comes with the
-                        checked-out branch, so it runs only once the repo's
-                        local git config allows it (git config
-                        hunk.mergeDanger true). Uses the stored verdict
+                        checked-out branch, so it runs only when the repo's
+                        local git config allows its content (git config
+                        --local --add hunk.mergeDanger <blob id>; a refusal
+                        prints the id). Uses the stored verdict
                         when `bin/merge-danger --check` calls it current, and
                         a fresh floor (--floor --stdout --committed) when not.
                         Prints a "mergeDanger" object for the plan, with each
@@ -906,17 +907,49 @@ RECORD_SETTLED_JQ="$RECORD_JQ_DEFS"'
 
 # bin/merge-danger comes with the checked-out branch, so running it because it
 # is there would run whatever a branch under review put there. It runs only
-# once the repo owner allows it in the repo's local git config, which no branch
-# can change; a global or command-line setting does not count.
-MERGE_DANGER_OPT_IN='bin/merge-danger comes with the checked-out branch, so it runs only once you allow it for this repo: git config hunk.mergeDanger true'
+# when its content is one the repo owner allowed in the repo's local git
+# config, which no branch can change: hunk.mergeDanger holds the full blob id
+# of each content allowed. A global or command-line setting does not count,
+# nor does a value that names no content, such as true: that would allow
+# whatever a later branch puts there. --no-filters hashes the bytes as they
+# are, so no .gitattributes from the branch can change the id.
+MERGE_DANGER_OID_RE='^([0-9a-f]{40}|[0-9a-f]{64})$'
+
+# The blob ids the repo allows bin/merge-danger to have, oldest first.
+merge_danger_allowed() {
+  git -C "$1" config --local --get-all hunk.mergeDanger 2>/dev/null | grep -E "$MERGE_DANGER_OID_RE"
+}
 
 # The path of a bin/merge-danger allowed to run. Status 1: the repo has none.
-# Status 2: it has one, but the repo has not allowed it.
+# Status 2: it has one, but the repo allows no content of it. Status 3: the
+# repo allows other content, not this one.
 merge_danger_tool() {
-  local root="$1"
+  local root="$1" allowed oid
   [[ -x "$root/bin/merge-danger" ]] || return 1
-  [[ $(git -C "$root" config --local --bool --get hunk.mergeDanger 2>/dev/null) == true ]] || return 2
+  allowed=$(merge_danger_allowed "$root") || return 2
+  oid=$(git -C "$root" hash-object --no-filters -- "$root/bin/merge-danger" 2>/dev/null) || return 3
+  [[ -n $oid ]] && grep -qxF -- "$oid" <<<"$allowed" || return 3
   printf '%s' "$root/bin/merge-danger"
+}
+
+# Why merge_danger_tool refused with status $2 (2 or 3), with the commands
+# that allow this content once you have read it.
+merge_danger_refusal() {
+  local root="$1" gate="$2" oid last allow
+  oid=$(git -C "$root" hash-object --no-filters -- "$root/bin/merge-danger" 2>/dev/null) || oid=""
+  allow="git config --local --add hunk.mergeDanger ${oid:-<blob id>}"
+  if [[ $gate == 3 ]]; then
+    last=$(merge_danger_allowed "$root" | tail -n 1) || last=""
+    if [[ -n $last ]] && git -C "$root" cat-file -e "$last" 2>/dev/null; then
+      printf '%s' "bin/merge-danger comes with the checked-out branch and changed since you allowed it for this repo; compare: git cat-file -p $last | diff -u - bin/merge-danger; then allow this content: $allow"
+    else
+      printf '%s' "bin/merge-danger comes with the checked-out branch and changed since you allowed it for this repo; read it, then allow this content: $allow"
+    fi
+  elif git -C "$root" config --local --get-all hunk.mergeDanger >/dev/null 2>&1; then
+    printf '%s' "bin/merge-danger comes with the checked-out branch, so it runs only once you allow this content of it for this repo, and a hunk.mergeDanger that names no content, such as true, no longer counts; read it, then: $allow"
+  else
+    printf '%s' "bin/merge-danger comes with the checked-out branch, so it runs only once you allow this content of it for this repo; read it, then: $allow"
+  fi
 }
 
 # The content digest bin/merge-danger keys its files by (the second field of
@@ -941,8 +974,8 @@ cmd_danger() {
       echo "$PROG: no bin/merge-danger in this repo; nothing to cross-check" >&2
       return 0
       ;;
-    2)
-      echo "$PROG: $MERGE_DANGER_OPT_IN; no cross-check" >&2
+    2 | 3)
+      echo "$PROG: $(merge_danger_refusal "$root" "$gate"); no cross-check" >&2
       return 0
       ;;
   esac
@@ -1126,7 +1159,7 @@ cmd_render() {
   md_tool=$(merge_danger_tool "$root") || md_gate=$?
   case $md_gate in
     1) md_why="the repo has no bin/merge-danger" ;;
-    2) md_why=$MERGE_DANGER_OPT_IN ;;
+    2 | 3) md_why=$(merge_danger_refusal "$root" "$md_gate") ;;
   esac
   if jq -e '.mergeDanger | type == "object"' "$plan" >/dev/null 2>&1; then
     md_digest=$(jq -r '.mergeDanger.digest // empty | strings' "$plan" 2>/dev/null) || md_digest=""

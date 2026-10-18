@@ -260,11 +260,14 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    This is a second opinion, never a gate. With no `bin/merge-danger`, or when it fails, `danger`
    says so on stderr, prints nothing and exits 0: go on without the cross-check.
 
-   `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only once the
-   repo's local git config allows it: `git config hunk.mergeDanger true`. Until then, `danger`
-   prints nothing and says so. **Never set that yourself**, not even to finish this step: it is
-   the user's call whether this repo's branches may run code on their machine. Tell the user the
-   command, and go on without the cross-check.
+   `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only when the
+   repo's local git config allows its exact content:
+   `git config --local --add hunk.mergeDanger <blob id>`. A branch that changes the script needs a
+   new allow. Until then, `danger` prints nothing and says so, with the id and the command.
+   **Never set that yourself**, not even to finish this step, and not when `danger` says the
+   script changed since it was allowed: it is the user's call whether this repo's branches may
+   run code on their machine. Tell the user the command `danger` printed, and go on without the
+   cross-check.
 
 9. Write the HTML writeup, always — this is not optional. You author prose only. `hunk-plan
    render` owns the page frame, the palette and its dark-mode pairing, the nav, the table of
