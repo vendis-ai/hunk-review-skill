@@ -35,6 +35,23 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    `origin/main`'s tip and the merge base are the same commit, the three-dot diff is exactly what
    the branch contains.
 
+   Then ask whether the repo's `bin/merge-danger` may run, for the cross-check in step 8:
+
+       hunk-plan danger --allowed
+
+   It needs no plan and runs nothing. It prints `allowed`, `none` (the repo has no
+   `bin/merge-danger`) or `refused`. On `allowed` or `none`, say nothing. On `refused`, tell the
+   user now, so they can allow it while you work, and pass on what it printed on stderr:
+
+   - read `bin/merge-danger`, or run the diff command the message gives when the script changed
+     since they allowed it;
+   - check the id: `git hash-object --no-filters bin/merge-danger` prints the id the message names;
+   - run the `git config --local --add hunk.mergeDanger <id>` command from the message.
+
+   When it says the script changed, also say whether this branch changes `bin/merge-danger`; the
+   numstat above shows it. Never run the allow command yourself (step 8 says why), and go on with
+   the review without waiting.
+
 2. Check for a reviewer config: `.coderabbit.yaml` or `.coderabbit.yml` at repo root. If present,
    it is often the richest source of "what actually matters here and why" in the repo — read it
    as another hypothesis source, alongside the branch name (step 4):
@@ -263,11 +280,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only when the
    repo's local git config allows its exact content:
    `git config --local --add hunk.mergeDanger <blob id>`. A branch that changes the script needs a
-   new allow. Until then, `danger` prints nothing and says so, with the id and the command.
-   **Never set that yourself**, not even to finish this step, and not when `danger` says the
-   script changed since it was allowed: it is the user's call whether this repo's branches may
-   run code on their machine. Tell the user the command `danger` printed, and go on without the
-   cross-check.
+   new allow, which step 1 asked the user for. If it is still not allowed, `danger` prints nothing
+   and says so: go on without the cross-check. **Never set that yourself**, not even to finish
+   this step, and not when `danger` says the script changed since it was allowed: it is the
+   user's call whether this repo's branches may run code on their machine.
 
 9. Write the HTML writeup, always — this is not optional. You author prose only. `hunk-plan
    render` owns the page frame, the palette and its dark-mode pairing, the nav, the table of
@@ -466,6 +482,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     single command to open the plan, plus the writeup from step 9 as a clickable link. If the
     `review-plan` extension is active, the plan alone is enough to open in Hunk. If not, pass the
     derived sidecar with `--agent-context`.
+
+    When step 8 skipped the merge-danger cross-check because the script was not allowed, say so
+    in one line. Step 1 already gave the steps, so do not repeat them.
 
     Point that command at the fork point, not at the three-dot range: `hunk diff <merge-base>`,
     with the merge-base from step 1. The loop in step 11 makes uncommitted fixes, which only a diff

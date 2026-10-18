@@ -104,7 +104,8 @@ Commands:
                         snapshot no longer holds was deleted. Snapshots are
                         taken when one of the extension's keys (S, A, V, X, <,
                         >) runs, so an agent reply shows only once one has.
-  danger [--in-repo]    Cross-check the plan's door calls against the repo's
+  danger [--in-repo] [--allowed]
+                        Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
                         bin/merge-danger (Vendis). That script comes with the
                         checked-out branch, so it runs only when the repo's
@@ -117,6 +118,9 @@ Commands:
                         disagreement's "reason" left for the review to write.
                         A second opinion, never a gate: with no tool, or when
                         the tool fails, it says so on stderr and exits 0.
+                        --allowed needs no plan and runs nothing: it prints
+                        allowed, none (no bin/merge-danger) or refused, with
+                        the refusal and the allow command on stderr.
   wait [--timeout <seconds>]
                         Block until the reviewer hands the review back from
                         Hunk ("Send review to agent", S) or approves it
@@ -966,6 +970,20 @@ merge_danger_digest() {
 cmd_danger() {
   local root plan tool gate=0 msg rc verdict="" source status err gitdir
   root=$(repo_root)
+  # --allowed only says whether the gate lets bin/merge-danger run, so a review
+  # can ask the user at its start, before it has a plan. It runs nothing.
+  if has_flag --allowed "$@"; then
+    merge_danger_tool "$root" >/dev/null || gate=$?
+    case $gate in
+      0) echo allowed ;;
+      1) echo none ;;
+      *)
+        echo refused
+        echo "$PROG: $(merge_danger_refusal "$root" "$gate")" >&2
+        ;;
+    esac
+    return 0
+  fi
   command -v jq >/dev/null 2>&1 || die "jq is required for the merge-danger cross-check"
   plan=$(resolve_plan "$root" "$@")
   tool=$(merge_danger_tool "$root") || gate=$?

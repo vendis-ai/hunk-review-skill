@@ -129,6 +129,7 @@ accepted as known. All of it is advice: nothing here blocks a review, a write or
 its exact content for that repo. Read the script, then allow it with
 `git config --local --add hunk.mergeDanger <blob id>`; `hunk-plan danger` prints the id. A branch
 that changes the script needs a new allow. A global setting does not count, and neither does `true`.
+hunk-review checks this when it starts and tells you the steps, so you can allow it during the review.
 
 The prose follows short-sentence rules taken from ASD-STE100: one fact per sentence, the small
 words kept, the effect before the mechanism. `hunk-plan render` names every sentence over 25

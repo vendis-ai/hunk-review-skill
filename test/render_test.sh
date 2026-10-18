@@ -425,6 +425,8 @@ danger_run() {
   echo $? >"$TMP/danger.rc"
 }
 row() { jq -c "[.disagreements[] | select($1)] | length" "$TMP/danger.out"; }
+# danger_allowed -- prints what `danger --allowed` says; its stderr lands in a file.
+danger_allowed() { (cd "$DANGER" && run_plan danger --allowed 2>"$TMP/allowed.err"); }
 
 PLAN_DOORS='{"version":1,"groups":[
   {"title":"Security boundary","importance":1,"door":"one-way","files":[{"path":"a.rb"}]},
@@ -436,6 +438,7 @@ danger_run
 assert_eq "$(cat "$TMP/danger.rc")" "0" "no bin/merge-danger: exits 0"
 assert_eq "$(cat "$TMP/danger.out")" "" "...prints no object"
 assert_in 'no bin/merge-danger in this repo; nothing to cross-check' "$TMP/danger.err" "...and says so"
+assert_eq "$(danger_allowed)" "none" "danger --allowed: none without bin/merge-danger"
 
 cp "$TMP/merge-danger" "$DANGER/bin/merge-danger"
 cp "$TMP/verdict.json" "$DGITDIR/merge-danger.json"
@@ -445,6 +448,10 @@ cp "$TMP/verdict.json" "$DGITDIR/merge-danger.json"
 # setting does, nor a value that names no content.
 MD_OID=$(git -C "$DANGER" hash-object --no-filters -- bin/merge-danger)
 MD_ALLOW="git config --local --add hunk.mergeDanger $MD_OID; no cross-check"
+assert_eq "$(danger_allowed)" "refused" "danger --allowed: refused before the repo allows it"
+assert_in "read it, then: git config --local --add hunk.mergeDanger $MD_OID" "$TMP/allowed.err" \
+  "...with the allow command on stderr"
+[[ -e $MD_RAN ]] && no "...and runs nothing" || ok "...and runs nothing"
 danger_run
 assert_eq "$(cat "$TMP/danger.rc")" "0" "a bin/merge-danger the repo has not allowed: exits 0"
 assert_eq "$(cat "$TMP/danger.out")" "" "...prints no object"
@@ -616,7 +623,9 @@ danger_render >/dev/null
 assert_in "cannot tell whether the plan's mergeDanger describes this content (bin/merge-danger comes with the checked-out branch and changed since you allowed it" \
   "$TMP/drender.err" "...render refuses it too"
 assert_not_in 'Settled by review' "$DOUT" "...and leaves the record out"
-[[ -e $MD_RAN ]] && no "...and neither runs it" || ok "...and neither runs it"
+assert_eq "$(danger_allowed)" "refused" "...danger --allowed calls it refused"
+assert_in "changed since you allowed it for this repo" "$TMP/allowed.err" "...and says it changed"
+[[ -e $MD_RAN ]] && no "...and none of them runs it" || ok "...and none of them runs it"
 git -C "$DANGER" hash-object -w --no-filters -- "$TMP/merge-danger" >/dev/null
 danger_run
 assert_in "compare: git cat-file -p $MD_OID | diff -u - bin/merge-danger; then allow this content: $MD_ALLOW2; no cross-check" \
@@ -624,6 +633,7 @@ assert_in "compare: git cat-file -p $MD_OID | diff -u - bin/merge-danger; then a
 grep -qxF '+# changed' <(cd "$DANGER" && git cat-file -p "$MD_OID" | diff -u - bin/merge-danger) &&
   ok "...which shows the change" || no "...which shows the change"
 git -C "$DANGER" config --add hunk.mergeDanger "$MD_OID2"
+assert_eq "$(danger_allowed)" "allowed" "danger --allowed: allowed once the repo allows this content"
 danger_render >/dev/null
 assert_in 'Settled by review' "$DOUT" "once allowed too, the changed content runs"
 [[ -e $MD_RAN ]] && ok "...and render runs it" || no "...and render runs it"
@@ -634,6 +644,12 @@ assert_not_in 'Settled by review' "$DOUT" "a record no tool can date is left out
 assert_in 'cannot tell which content' "$TMP/drender.err" "...and stderr says so"
 assert_in 'This review agrees with the verdict.' "$DOUT" "...while the plan's own mergeDanger still renders"
 (cd "$DANGER" && run_plan clear --yes >/dev/null 2>&1)
+
+# A review asks at its start, before it has written a plan.
+chmod +x "$DANGER/bin/merge-danger"
+danger_run
+assert_in 'no review plan found' "$TMP/danger.err" "with no plan, danger stops"
+assert_eq "$(danger_allowed)" "allowed" "...while danger --allowed needs none"
 
 echo
 echo "hunk-plan gc"
