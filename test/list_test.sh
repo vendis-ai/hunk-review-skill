@@ -149,9 +149,27 @@ echo
 echo "the branch moves on"
 
 commit second
+SECOND=$(git rev-parse HEAD)
 assert_eq "$(row '"\(.head.moved) \(.head.rebased)"')" "1 false" "one commit since the plan"
 run_list
 assert_match "$OUT" ' repo-one +review-branch +\+1 ' "text: +1"
+
+# The worktree moves to other work. The row still follows the plan's branch.
+git checkout -q -b other-work
+commit other1
+commit other2
+assert_eq "$(row '"\(.branch) \(.head.moved) \(.head.rebased) \(.head.now)"')" \
+  "review-branch 1 false $SECOND" "another branch checked out: the plan's branch, and how far it moved"
+git checkout -q --orphan unrelated
+commit unrelated
+assert_eq "$(row '"\(.head.moved) \(.head.rebased)"')" "1 false" "an unrelated checkout does not read as rebased"
+git branch -q -D review-branch
+assert_eq "$(row '"\(.branch) \(.head.now) \(.head.moved) \(.head.rebased)"')" "review-branch null null null" \
+  "the plan's branch deleted: the head is unknown"
+run_list
+assert_match "$OUT" ' repo-one +review-branch +\? ' "text: ?"
+git checkout -q -b review-branch "$SECOND"
+git branch -q -D other-work unrelated
 
 printf '%s' "$PLAN_JSON" | run_plan write >/dev/null 2>&1 # a plan on the second commit
 PLAN_ID=$(jq -r '.planId' "$PLAN")
@@ -180,6 +198,11 @@ DEAD=$!
 wait "$DEAD"
 jq -n --arg id "$PLAN_ID" --argjson pid "$DEAD" '{version: 1, pid: $pid, planId: $id}' >"$LOOP/window.json"
 assert_eq "$(row '.window.state')" "closed" "a window whose process is gone"
+cp "$LOOP/window.json" "$TMP/window.json"
+printf '{"version":1,"pid":' >"$LOOP/window.json"
+assert_eq "$(row '"\(.error) \(.planId == "'"$PLAN_ID"'") \(.window.state) \(.window.showsPlan)"')" "null true open false" \
+  "a window file cut short leaves the row standing, read as wait reads it"
+mv "$TMP/window.json" "$LOOP/window.json"
 
 jq -n --arg r "$R1" '{sessions: [{repoRoot: "/somewhere/else", files: []}, {repoRoot: $r, files: [{path: "x"}]}]}' >"$HUNK_STUB_SESSIONS"
 assert_eq "$(row '.session')" "true" "a live session for the repo"
@@ -296,6 +319,23 @@ git init -q .
 run_list --here
 assert_eq "$RC" "0" "a repo with no plan: exit 0"
 grep -q 'no review plan for' "$ERR" && ok "and says so" || no "and says so ($(cat "$ERR"))"
+
+echo
+echo "past the argument limit"
+
+# Rows past 128 KiB, more than Linux lets one argument carry.
+R4="$TMP/repo-big"
+mkdir -p "$R4"
+cd "$R4" || exit 1
+git init -q .
+commit init
+jq -n '{version: 1, groups: [{title: "Big",
+  files: [range(4000) | {path: "src/generated/file-\(.)-with-a-long-enough-name.ts"}]}]}' |
+  run_plan write >/dev/null 2>&1
+run_list --json
+assert_eq "$RC" "0" "--json: exit 0"
+assert_eq "$(jq -r '[.reviews[] | select(.repo == "'"$R4"'") | .planFiles | length] | first' "$OUT")" "4000" \
+  "with every row whole"
 
 echo
 echo "$PASS passed, $FAIL failed"

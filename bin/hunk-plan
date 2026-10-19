@@ -116,7 +116,9 @@ Commands:
                         One row per review plan in the state directory, newest
                         first: repo, branch, plan age, commits the branch moved
                         since the plan ("rebased" when the plan's commit is no
-                        longer an ancestor), the Hunk window (open, closed, or
+                        longer an ancestor; the branch is the one the plan was
+                        written on, whatever the worktree has checked out
+                        now), the Hunk window (open, closed, or
                         "earlier" when it still shows an earlier plan), a live
                         Hunk session, open/all user notes, viewed marks against
                         the plan's files, and sends to the agent (A: approved).
@@ -127,7 +129,8 @@ Commands:
                         the viewed ones, the notes sent, the last hand-off, the
                         door calls, the merge-danger verdict and the writeup;
                         a value nothing on disk records is null. Plans written
-                        before "head" was stamped show "?" for it.
+                        before "head" was stamped, and plans whose branch was
+                        deleted since, show "?" for it.
   danger [--in-repo] [--allowed]
                         Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
@@ -538,9 +541,11 @@ cmd_notes() {
   fi
   count=$(printf '%s' "$notes" | jq 'length')
 
+  # On stdin, not as an argument: Linux caps a single argument at 128 KiB, and
+  # a long journal passes that.
   if has_flag --json "$@"; then
-    jq -n --arg journal "$journal" --arg plan "$plan_id" --argjson all "$all" --argjson notes "$notes" \
-      '{journal: $journal, planId: (if $all or $plan == "" then null else $plan end), notes: $notes}'
+    printf '%s' "$notes" | jq --arg journal "$journal" --arg plan "$plan_id" --argjson all "$all" \
+      '{journal: $journal, planId: (if $all or $plan == "" then null else $plan end), notes: .}'
     return 0
   fi
 
@@ -618,7 +623,7 @@ LIST_ROW_JQ='
       key: $key,
       repo: ($root | nn),
       repoExists: $exists,
-      branch: (($branch | nn) // ($p.branch | strings | nn) // null),
+      branch: (($p.branch | strings | nn) // ($branch | nn) // null),
       plan: $planPath,
       planId: ($planId | nn),
       writtenAt: (
@@ -685,26 +690,40 @@ LIST_TEXT_JQ='
 # repo. Status 1: the plan does not parse. Two jq calls per row: a list over
 # dozens of plans would otherwise spend its time starting processes.
 list_row() {
-  local plan="$1" key="$2" root="$3" sessions="$4" sdir loop meta plan_id head closed pid wid
+  local plan="$1" key="$2" root="$3" sessions="$4" sdir loop meta plan_id head closed pid wid plan_branch
   local exists=false now="" branch="" moved=null rebased=null state="" shows=true mtime="" html report rc
   local viewed=/dev/null last=/dev/null journal=/dev/null overview=false glossary=false win=/dev/null
   sdir="$(state_dir)/hunk/review-plan"
   loop="$sdir/$key.loop"
   [[ -f $loop/window.json ]] && win="$loop/window.json"
 
-  # The plan's id and head, and the window's, in one read. `|` separates the
-  # fields: unlike a tab it never collapses, so an empty one stays in place.
-  meta=$(jq -rn '[inputs] as [$p, $w]
+  # The plan's id, head and branch, and the window's, in one read. `|`
+  # separates the fields: unlike a tab it never collapses, so an empty one
+  # stays in place. The branch goes last, since a branch name may hold a `|`
+  # and read gives the last field the rest of the line. The window is read
+  # raw: one that does not parse reads as empty, as window_closed reads it,
+  # and leaves the row standing.
+  meta=$(jq -rn --rawfile winRaw "$win" '[inputs] as [$p]
+    | ($winRaw | fromjson? // {} | if type == "object" then . else {} end) as $w
     | [ (($p.planId | strings) // ""), (($p.head | strings) // ""),
-        (($w.closedAt // "") | tostring), (($w.pid // "") | tostring), (($w.planId | strings) // "") ]
-    | join("|")' "$plan" "$win" 2>/dev/null) || return 1
-  IFS='|' read -r plan_id head closed pid wid <<<"$meta"
+        (($w.closedAt // "") | tostring), (($w.pid // "") | tostring), (($w.planId | strings) // ""),
+        (($p.branch | strings) // "") ]
+    | join("|")' "$plan" 2>/dev/null) || return 1
+  IFS='|' read -r plan_id head closed pid wid plan_branch <<<"$meta"
   [[ -n $plan_id ]] || mtime=$(mtime_of "$plan") || mtime=""
 
   if [[ -n $root && -e $root/.git ]]; then
     exists=true
     branch=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null) || branch=""
-    now=$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null) || now=""
+    # How far the branch the plan was written on moved, not whatever the
+    # worktree has checked out now. Once that branch is gone nothing says
+    # where the review went, so the head stays unknown. Only a plan written
+    # on a detached HEAD falls back to HEAD.
+    if [[ -n $plan_branch ]]; then
+      now=$(git -C "$root" rev-parse -q --verify "refs/heads/$plan_branch^{commit}" 2>/dev/null) || now=""
+    else
+      now=$(git -C "$root" rev-parse -q --verify HEAD 2>/dev/null) || now=""
+    fi
     if [[ -n $head && -n $now ]]; then
       # 0: the plan's commit is an ancestor; 1: it is not; anything else: git
       # no longer has it. Either of the last two means the branch was rewritten.
@@ -805,8 +824,10 @@ cmd_list() {
   done
   rows=$(printf '%s' "$rows" | jq -s -c 'sort_by(.writtenAt // "") | reverse')
 
+  # The rows go to jq on stdin, never as an argument: Linux caps a single
+  # argument at 128 KiB, and a few dozen reviews pass that.
   if has_flag --json "$@"; then
-    jq -n --arg dir "$sdir" --argjson reviews "$rows" '{stateDir: $dir, reviews: $reviews}'
+    printf '%s' "$rows" | jq --arg dir "$sdir" '{stateDir: $dir, reviews: .}'
     return 0
   fi
 

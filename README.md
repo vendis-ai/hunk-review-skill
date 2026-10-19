@@ -332,11 +332,11 @@ hand-off between Hunk and a waiting agent, and the `<digest>.notes.jsonl` notes 
 shared copy of the two vendored libraries. `gc` removes a notes journal with no plan only once it
 is as old as `--older-than`, since notes saved without a plan are still your notes.
 
-`hunk-plan list` reads them back as one row per review, newest first. A row shows the branch, how
-many commits it moved since the plan, whether a Hunk window or session is open on it, your open
-notes, the files you marked viewed, and what you sent to the agent. `--json` adds the door calls,
-the merge-danger verdict and the writeup, and `--here` keeps to the current repo. A review whose
-worktree is gone still lists.
+`hunk-plan list` reads them back as one row per review, newest first. A row shows the branch the
+plan was written on, how many commits it moved since the plan, whether a Hunk window or session is
+open on it, your open notes, the files you marked viewed, and what you sent to the agent. `--json`
+adds the door calls, the merge-danger verdict and the writeup, and `--here` keeps to the current
+repo. A review whose worktree is gone still lists.
 
 ```sh
 hunk-plan list               # every review on this machine

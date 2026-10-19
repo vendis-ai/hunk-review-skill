@@ -156,6 +156,15 @@ run_notes --json
 assert_eq "$RC" "0" "a line cut short by a crash is not fatal"
 assert_eq "$(jq -r '[.notes[].id] | index("user:1-4") != null' "$OUT")" "true" "and the lines after it still count"
 
+# Past 128 KiB of notes, more than Linux lets one argument carry.
+jq -cn --arg w "$W1" --arg p "$PLAN_ID" --arg b "$(printf 'x%.0s' {1..300})" 'range(600) | {
+  v: 1, event: "created", at: "2026-10-15T13:00:00.000Z", planId: $p, head: null, window: $w,
+  note: {id: "user:big-\(.)", source: "user", file: "src/big.ts", side: "new", line: (. + 1), hunkIndex: 0, summary: $b}
+}' >>"$JOURNAL"
+run_notes --json
+assert_eq "$RC" "0" "a journal past the argument limit: exit 0"
+assert_eq "$(jq -r '[.notes[] | select(.file == "src/big.ts")] | length' "$OUT")" "600" "and every note in it"
+
 echo
 echo "cleanup"
 
