@@ -171,6 +171,11 @@ Commands:
                         plan, or from one started before plan ids, is set
                         aside as <loop>/stale.json (named on stderr) and the
                         wait goes on, and so does a quit of such a window.
+                        Before it waits, it renders the writeup again, as
+                        render does to its default path, once the plan has a
+                        report directory: whatever ran since the last render
+                        reaches the page. Render's warnings stay quiet, and a
+                        failed render is one line on stderr.
                         Exit codes: 0 go, 10 approved, 2 still waiting (run it
                         again), 3 nothing to wait on (no plan and no Hunk
                         window, or Hunk was closed since the plan was written).
@@ -2119,6 +2124,22 @@ window_closed() {
   [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null
 }
 
+# Render the writeup before the reviewer reads it again. Whatever a loop ran
+# since its own render -- fixes, a review gate that wrote a new record, a
+# merge-danger change -- can change what the page says, and a caller that adds
+# steps there need not remember to render after them. Only once a report
+# directory exists, to the default path, and quietly: render's warnings belong
+# to the render the skill runs itself. Its own process, so its `set -e` holds,
+# which a call inside a condition would switch off. A failure is one line on
+# stderr and never stops the wait.
+render_before_wait() {
+  local plan="$1" err
+  [[ -n $plan && -f "$(report_dir_for "$plan")/meta.json" ]] || return 0
+  if ! err=$("${BASH:-bash}" "${BASH_SOURCE[0]}" render 2>&1 >/dev/null); then
+    echo "$PROG: could not render the writeup before waiting: ${err##*$'\n'}" >&2
+  fi
+}
+
 cmd_wait() {
   local root loop plan plan_id timeout=480 args=("$@") i start next_sentinel=0
   for ((i = 0; i < ${#args[@]}; i++)); do
@@ -2138,6 +2159,7 @@ cmd_wait() {
     echo "$PROG: nothing to wait on: no review plan for $root, and Hunk has not opened it" >&2
     exit "$WAIT_NOTHING"
   fi
+  render_before_wait "$plan"
 
   start=$SECONDS
   while :; do

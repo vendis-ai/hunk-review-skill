@@ -590,7 +590,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
         hunk-plan wait
 
     It blocks for at most 8 minutes (`--timeout <seconds>` changes that) and prints the hand-off
-    as JSON. Run it the way your harness allows a long command:
+    as JSON. It renders the writeup first, so a step that ran after your last render, yours or a
+    caller's, still reaches the page. Run it the way your harness allows a long command:
 
     - Claude Code: in the background (`run_in_background`), then end your turn. The completion
       notification wakes you with the output and the exit code.

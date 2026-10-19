@@ -147,6 +147,32 @@ assert_eq "$(wc -c <"$OUT" | tr -d ' ')" "0" "prints nothing on stdout while wai
 grep -q "run 'hunk-plan wait' again" "$ERR" && ok "tells the agent to call again" || no "tells the agent to call again"
 
 echo
+echo "the writeup, rendered before each wait"
+
+printf '{"version":1,"groups":[{"title":"Core","files":[{"path":"src/a.ts"}]}]}' | run_plan write >/dev/null 2>&1
+HTML="${PLAN%.json}.html"
+run_wait --timeout 0
+assert_no_file "$HTML" "no report directory: nothing is rendered"
+REPORT=$(run_plan report-dir --init 2>/dev/null)
+run_wait --timeout 0
+assert_file "$HTML" "with one, wait renders the writeup before it waits"
+assert_eq "$(wc -c <"$OUT" | tr -d ' ')" "0" "...and keeps stdout for the hand-off"
+assert_eq "$(grep -vc "run 'hunk-plan wait' again" "$ERR")" "0" "...and render's own output stays quiet"
+# A step a loop runs between its own render and the wait, such as a review
+# gate that writes a new record, still reaches the page.
+echo "1. It sends the mail." >"$REPORT/_decisions.md"
+run_wait --timeout 0
+grep -q '<div class="decisions">' "$HTML" && ok "a change since the last render reaches the page" ||
+  no "a change since the last render reaches the page"
+echo '{not json' >"$REPORT/meta.json"
+write_marker go
+run_wait --timeout 5
+assert_eq "$RC" "0" "a render that fails never stops the wait"
+grep -q 'could not render the writeup before waiting' "$ERR" && ok "...and says so in one line" ||
+  no "...and says so in one line ($(cat "$ERR"))"
+rm -rf "$REPORT" "$HTML"
+
+echo
 echo "hand-off from the extension"
 
 write_marker go
