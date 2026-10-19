@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)
 HUNK_PLAN="$REPO_ROOT/bin/hunk-plan"
 
 run_plan() {
