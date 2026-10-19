@@ -21,7 +21,7 @@ set -euo pipefail
 
 REPO_URL=https://github.com/modem-dev/hunk
 RAW_URL=https://raw.githubusercontent.com/modem-dev/hunk
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname "$0")/.." >/dev/null && pwd)
 
 # The catalog moved into packages/ in 0.22.0 (modem-dev/hunk#997). Both
 # spellings are tried so this keeps working against older tags.
