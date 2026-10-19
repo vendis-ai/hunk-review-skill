@@ -304,6 +304,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
        hunk-plan report-dir --init
 
+   Every file in it starts empty. `hunk-plan write` moved an earlier review's prose to
+   `<report dir>.prev`, so nothing you leave empty shows that review's text. Writing the plan
+   again after this step moves your own prose there too. Copy back what still applies.
+
    Then fill in the files it created. Optimise for skimming, not reading: the reader is
    switching between this and other work all day. Paragraphs of narrative are the failure mode
    this step used to produce — don't.
@@ -613,7 +617,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
       hunk-review's prose alone, so these edits are yours. Then re-render the writeup, tell the
       user what changed and to press `r` in Hunk, and run `hunk-plan wait` again. Never write the
       plan again inside the loop, not even to refresh its `mergeDanger`: a new plan id would make
-      the open window's next answer count as one for an earlier plan.
+      the open window's next answer count as one for an earlier plan, and the write would move
+      the writeup's prose aside.
     - `10`, approved. Stop waiting, say so, and finish. Open merge-danger disagreements never
       hold an approval back: the reviewer saw them at the top of the TL;DR.
     - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to

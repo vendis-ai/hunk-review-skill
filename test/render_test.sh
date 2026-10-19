@@ -607,7 +607,10 @@ assert_not_in 'for earlier content' "$DOUT" "a verdict for this content is not l
 MD_DIGEST=d2 danger_render >/dev/null
 assert_in '(current verdict; for earlier content)' "$DOUT" "a verdict for other content is labelled, not dropped"
 
-(cd "$DANGER" && run_plan show | jq '.mergeDanger.disagreements = []' | run_plan write >/dev/null 2>&1)
+(cd "$DANGER" && run_plan show | jq '.mergeDanger.disagreements = []' | run_plan write >/dev/null 2>"$TMP/dwrite.err")
+# A new plan starts a new writeup; a session that replans takes back what still applies.
+assert_in "moved the earlier writeup to $DDIR.prev" "$TMP/dwrite.err" "writing the plan again moves the writeup aside"
+mv "$DDIR.prev" "$DDIR"
 danger_render >/dev/null
 assert_in '<p class="danger-agree">This review agrees with the verdict.</p>' "$DOUT" "says when the review agrees"
 
@@ -755,6 +758,42 @@ echo "hunk-plan clear"
 run_plan clear --yes >/dev/null 2>&1
 [[ -e $OUT ]] && no "clear removes the rendered html" || ok "clear removes the rendered html"
 [[ -e $DIR ]] && no "clear removes the report directory" || ok "clear removes the report directory"
+
+echo
+echo "hunk-plan write: a new plan starts a new writeup"
+# The report directory belongs to the repo, so the files a new review leaves
+# unwritten used to render the earlier review's prose: a sub-agent leaves
+# _decisions.md empty, a page with no glossary leaves _glossary.md empty, and
+# hunk-handle-notes appends to a group's .notes.md.
+run_plan write <plan.json >/dev/null 2>&1
+DIR=$(run_plan report-dir --init 2>/dev/null)
+printf '{"title":"Earlier Review","subtitle":"","docs":[]}\n' >"$DIR/meta.json"
+echo "1. **It sends the mail.** (you asked: \"no mail\")" >"$DIR/_decisions.md"
+echo "- **Widget**: the earlier review's term." >"$DIR/_glossary.md"
+echo "- \`a.rb:1\` — **Fixed.** The earlier round." >"$DIR/security-boundary.notes.md"
+run_plan write <plan.json >/dev/null 2>"$TMP/new.err"
+assert_in "moved the earlier writeup to $DIR.prev" "$TMP/new.err" "a new plan moves the earlier writeup aside"
+[[ -e $DIR ]] && no "...and leaves no report directory" || ok "...and leaves no report directory"
+assert_eq "$(cat "$DIR.prev/_decisions.md")" '1. **It sends the mail.** (you asked: "no mail")' \
+  "...keeping its prose in .prev"
+run_plan report-dir --init >/dev/null 2>&1
+run_plan render -o "$TMP/fresh.html" >/dev/null 2>&1
+assert_in '<p class="decisions-none">' "$TMP/fresh.html" "the new writeup shows no earlier decisions"
+assert_not_in '<details class="glossary">' "$TMP/fresh.html" "...no earlier glossary"
+assert_not_in '<div class="notes">' "$TMP/fresh.html" "...no earlier group notes"
+assert_not_in 'Earlier Review' "$TMP/fresh.html" "...and not the earlier title"
+run_plan write <plan.json >/dev/null 2>"$TMP/again.err"
+assert_not_in 'moved the earlier writeup' "$TMP/again.err" "a bare scaffold is removed, not moved"
+[[ -e $DIR ]] && no "...leaving no report directory" || ok "...leaving no report directory"
+assert_eq "$(cat "$DIR.prev/_decisions.md")" '1. **It sends the mail.** (you asked: "no mail")' \
+  "...so the prose in .prev outlives a second write"
+mkdir -p "$STATE/deadbeefdeadbeef.report.prev"
+run_plan gc --yes >/dev/null 2>&1
+[[ -e "$STATE/deadbeefdeadbeef.report.prev" ]] && no "gc removes an earlier writeup with no plan" ||
+  ok "gc removes an earlier writeup with no plan"
+[[ -e $DIR.prev ]] && ok "...and keeps a live plan's" || no "...and keeps a live plan's"
+run_plan clear --yes >/dev/null 2>&1
+[[ -e $DIR.prev ]] && no "clear removes the earlier writeup" || ok "clear removes the earlier writeup"
 
 # ── optional: DOM behaviour, only with a browser ────────────────────────────
 if [[ -n ${CHROME:-} ]] && command -v "$CHROME" >/dev/null 2>&1; then

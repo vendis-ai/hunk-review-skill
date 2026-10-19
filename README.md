@@ -329,7 +329,8 @@ Plans live outside your repos, in `${XDG_STATE_HOME:-~/.local/state}/hunk/review
 a hash of the repo path. Each review leaves a `<digest>.json` plan, a `<digest>.report/` directory
 of the agent's prose, the rendered `<digest>.html`, a `<digest>.loop/` directory for the
 hand-off between Hunk and a waiting agent, and the `<digest>.notes.jsonl` notes journal, plus a
-shared copy of the two vendored libraries. `gc` removes a notes journal with no plan only once it
+shared copy of the two vendored libraries. A new plan moves the earlier review's prose to
+`<digest>.report.prev/`, so none of it shows up in the new writeup. `gc` removes a notes journal with no plan only once it
 is as old as `--older-than`, since notes saved without a plan are still your notes.
 
 `hunk-plan list` reads them back as one row per review, newest first, for the plan Hunk loads (a

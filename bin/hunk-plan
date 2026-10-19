@@ -37,7 +37,10 @@ Commands:
                         stamps a fresh "planId" into the stored plan, which
                         ties review-loop hand-offs to it (see wait), and the
                         "head" commit and "branch" it was written on (see
-                        list). Warns on
+                        list). A new plan starts a new writeup: the report
+                        directory written for the plan it replaces moves to
+                        <plan>.report.prev (an empty scaffold is removed), so
+                        no earlier review's prose renders under it. Warns on
                         stderr, after writing, about a one-way group ranked
                         Skim, an unknown "door" value, a malformed
                         "blastRadius", and a "mergeDanger" that is malformed,
@@ -64,7 +67,8 @@ Commands:
                         and a <group-slug>.why.md, .example.md and .md per
                         group in the plan -- so nothing has to derive a slug
                         by hand.
-                        Existing files are never overwritten.
+                        Existing files are never overwritten; they are this
+                        plan's, since write moves an earlier plan's aside.
   render [--in-repo] [-o <path>]
                         Render the plan plus its report directory into a
                         self-contained HTML page at <plan>.html (or -o), and
@@ -90,8 +94,8 @@ Commands:
                         fetched) -- one or the other, never both.
   clear [--yes]         Remove this repo's plan (both possible locations) and
                         its sibling .viewed.json, .sidecar.json, .html,
-                        .report/, .loop/ and .notes.jsonl. Asks for
-                        confirmation unless --yes.
+                        .report/, .report.prev/, .loop/ and .notes.jsonl.
+                        Asks for confirmation unless --yes.
   gc [--dry-run] [--yes] [--older-than <days>]
                         Sweep the whole state directory, not just this repo:
                         artifacts with no plan file, plans whose repo no longer
@@ -320,6 +324,7 @@ cmd_write() {
   mv -f "$stamped" "$target"
   manifest_record "$root"
   echo "$PROG: wrote $target"
+  set_report_aside "$(report_dir_for "$target")"
 
   local warning
   while IFS= read -r warning; do
@@ -468,8 +473,10 @@ cmd_clear() {
   for target in \
     "$state_plan" "$in_repo_plan" "$viewed" \
     "$(html_path_for "$state_plan")" "$(sidecar_path_for "$state_plan")" \
-    "$(report_dir_for "$state_plan")" "$(loop_dir_for "$root")" "$(journal_path_for "$root")" \
-    "$(html_path_for "$in_repo_plan")" "$(report_dir_for "$in_repo_plan")"; do
+    "$(report_dir_for "$state_plan")" "$(report_dir_for "$state_plan").prev" \
+    "$(loop_dir_for "$root")" "$(journal_path_for "$root")" \
+    "$(html_path_for "$in_repo_plan")" "$(report_dir_for "$in_repo_plan")" \
+    "$(report_dir_for "$in_repo_plan").prev"; do
     [[ -e $target ]] && existing+=("$target")
   done
 
@@ -966,6 +973,35 @@ github_slug() {
   slug="${slug%/}"
   [[ $slug == */* ]] || return 0
   printf '%s' "$slug"
+}
+
+# A new plan starts with no report directory. Its files were written for the
+# plan this write replaces, and the directory belongs to the repo, not to a
+# review, so any file the new review leaves unwritten would render the earlier
+# review's prose under this one: a sub-agent leaves _decisions.md empty, a page
+# with no glossary leaves _glossary.md empty, and hunk-handle-notes appends to
+# a group's .notes.md. The old directory is moved to <dir>.prev, never deleted,
+# for a session that replans and wants back what still applies. Only the last
+# one with prose in it is kept: a bare scaffold is removed instead, so writing
+# the plan twice in a row never replaces that prose with empty files.
+set_report_aside() {
+  local dir="$1" prev="$1.prev" f prose=false
+  [[ -d $dir ]] || return 0
+  for f in "$dir"/*.md; do
+    [[ -s $f ]] && prose=true && break
+  done
+  if ! $prose && [[ -f $dir/meta.json ]] &&
+    ! jq -e '(.title // "") == "" and (.subtitle // "") == "" and ((.docs // []) | length) == 0' \
+      "$dir/meta.json" >/dev/null 2>&1; then
+    prose=true
+  fi
+  if ! $prose; then
+    rm -rf "$dir"
+  elif rm -rf "$prev" && mv "$dir" "$prev"; then
+    echo "$PROG: moved the earlier writeup to $prev; a new plan starts a new one" >&2
+  else
+    echo "$PROG: could not move $dir aside; the writeup may show an earlier review's prose" >&2
+  fi
 }
 
 # Record digest -> repo root. The digest is a one-way hash of the repo path, so
@@ -2133,7 +2169,7 @@ gc_remove_family() {
     [[ -e $target ]] || continue
     if [[ $dry == 1 ]]; then echo "  would remove $target"; else rm -f "$target"; fi
   done
-  for target in "$base.report" "$base.loop"; do
+  for target in "$base.report" "$base.report.prev" "$base.loop"; do
     [[ -d $target ]] || continue
     if [[ $dry == 1 ]]; then echo "  would remove $target/"; else rm -rf "$target"; fi
   done
@@ -2161,11 +2197,13 @@ cmd_gc() {
   local f base digest root
 
   # Pass 1: any artifact whose digest has no plan is dead by definition.
-  for f in "$sdir"/*.viewed.json "$sdir"/*.html "$sdir"/*.sidecar.json "$sdir"/*.report "$sdir"/*.loop; do
+  for f in "$sdir"/*.viewed.json "$sdir"/*.html "$sdir"/*.sidecar.json "$sdir"/*.report \
+    "$sdir"/*.report.prev "$sdir"/*.loop; do
     [[ -e $f ]] || continue
     base="${f%.viewed.json}"
     base="${base%.sidecar.json}"
     base="${base%.html}"
+    base="${base%.report.prev}"
     base="${base%.report}"
     base="${base%.loop}"
     [[ -f "$base.json" ]] && continue
