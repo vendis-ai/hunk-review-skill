@@ -60,9 +60,10 @@ Commands:
                         Print the report directory (<plan>.report/) that holds
                         the agent-authored body content for `render`. With
                         --init, create it and scaffold an empty meta.json,
-                        _overview.md, _tldr.md and _glossary.md, and a
-                        <group-slug>.why.md, .example.md and .md per group in
-                        the plan -- so nothing has to derive a slug by hand.
+                        _overview.md, _tldr.md, _decisions.md, _glossary.md,
+                        and a <group-slug>.why.md, .example.md and .md per
+                        group in the plan -- so nothing has to derive a slug
+                        by hand.
                         Existing files are never overwritten.
   render [--in-repo] [-o <path>]
                         Render the plan plus its report directory into a
@@ -75,7 +76,11 @@ Commands:
                         danger), a review record for the current content
                         (review-record.json in the git dir) adds the items
                         held for you under the TL;DR and a closed block of
-                        the settled ones.
+                        the settled ones. Whenever the repo has a
+                        bin/merge-danger, the TL;DR also says whether a
+                        review record covers this content. An empty _decisions.md renders
+                        as one line saying that only the session where the
+                        change was asked for can write it.
                         Sentences over 25 words and an oversized glossary are
                         reported on stderr; they never stop the render.
                         A meta.json "docs" entry takes either "path" (repo-
@@ -1365,9 +1370,11 @@ META
     fi
     # The page's front matter, in the order it renders: the overview for
     # whoever decides whether the branch matters, the TL;DR for whoever
-    # reviews it, and the glossary for both.
+    # reviews it (the review record's settled items follow it), the decisions
+    # and drift for whoever asked for the change, and the glossary for all.
     [[ -f "$dir/_overview.md" ]] || : >"$dir/_overview.md"
     [[ -f "$dir/_tldr.md" ]] || : >"$dir/_tldr.md"
+    [[ -f "$dir/_decisions.md" ]] || : >"$dir/_decisions.md"
     [[ -f "$dir/_glossary.md" ]] || : >"$dir/_glossary.md"
     while IFS=$'\t' read -r slug _ _ _ _; do
       [[ -n $slug ]] || continue
@@ -1495,24 +1502,48 @@ cmd_render() {
   fi
   gitdir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) || gitdir=""
   record="$gitdir/review-record.json"
+  # The TL;DR says whether a review record covers this content. The same
+  # check that shows or drops the record decides it, so the line stays true on
+  # every render, the review loop's included, and it needs no agent prose. A
+  # repo with no bin/merge-danger gets no line, unless a leftover record sits
+  # in its git dir: the page cannot date that one, and says so.
+  local gate_line="" gate_owed=0
+  local gate_unknown="This page cannot tell whether a review record covers this content."
+  # With no record file at all, no record covers this content, whether or
+  # not bin/merge-danger may run.
+  case $md_gate in
+    0 | 2 | 3) gate_line="No review record covers this content yet." gate_owed=1 ;;
+  esac
   if [[ -n $gitdir && -f $record ]]; then
     cur=""
     [[ $md_gate == 0 ]] && cur=$(merge_danger_digest "$root" "$md_tool")
     rec_digest=$(jq -r '.digest // empty | strings' "$record" 2>/dev/null) || rec_digest=""
     if [[ $md_gate != 0 ]]; then
       echo "$PROG: cannot tell which content $record describes ($md_why); left it out" >&2
+      gate_line=$gate_unknown gate_owed=0
     elif [[ -z $cur ]]; then
       echo "$PROG: cannot tell which content $record describes (bin/merge-danger --digest gave nothing); left it out" >&2
+      gate_line=$gate_unknown gate_owed=0
+    elif [[ -z $rec_digest ]]; then
+      echo "$PROG: could not read $record; left it out" >&2
+      gate_line=$gate_unknown gate_owed=0
     elif [[ $rec_digest != "$cur" ]]; then
       echo "$PROG: $record describes other content; left it out" >&2
+      gate_line="The review record describes other content, so none covers this content yet."
     else
       if ! held_html=$(jq -r "$RECORD_HELD_JQ" "$record" 2>/dev/null) ||
         ! settled_html=$(jq -r "$RECORD_SETTLED_JQ" "$record" 2>/dev/null); then
         held_html="" settled_html=""
         echo "$PROG: could not read $record; left it out" >&2
+        gate_line=$gate_unknown gate_owed=0
+      elif [[ -n $held_html ]]; then
+        gate_line="The review gate read this content. What it held for you follows." gate_owed=0
+      else
+        gate_line="The review gate read this content. It held nothing for you." gate_owed=0
       fi
     fi
   fi
+  [[ $gate_owed == 1 ]] && echo "$PROG: no review record covers this content yet" >&2
 
   tmp=$(mktemp "$outdir/.report.XXXXXX")
 
@@ -1547,8 +1578,9 @@ cmd_render() {
     printf '  <h1>%s</h1>\n' "$(esc "$title")"
     [[ -n $subtitle ]] && printf '  <p class="subtitle">%s</p>\n' "$(esc "$subtitle")"
 
-    if [[ -s "$dir/_overview.md" || -s "$dir/_tldr.md" || -s "$dir/_glossary.md" ||
-      -n $md_html || -n $held_html || -n $settled_html ]]; then
+    # Always printed: the decisions slot says something even when nothing else
+    # in the front matter does.
+    {
       printf '  <div class="front">\n'
       if [[ -s "$dir/_overview.md" ]]; then
         printf '  <div class="overview"><h3>Overview</h3><div class="md">'
@@ -1556,17 +1588,29 @@ cmd_render() {
         printf '</div></div>\n'
       fi
       # The TL;DR leads with any disagreement with the verdict, and ends with
-      # what the review record left for a person to decide.
-      if [[ -s "$dir/_tldr.md" || -n $md_html || -n $held_html ]]; then
+      # whether a review record covers this content and what it left for a
+      # person to decide.
+      if [[ -s "$dir/_tldr.md" || -n $md_html || -n $gate_line || -n $held_html ]]; then
         printf '  <div class="tldr"><h3>TL;DR</h3>'
         [[ -n $md_html ]] && printf '%s' "$md_html"
         if [[ -s "$dir/_tldr.md" ]]; then
           printf '<div class="md"><script type="text/markdown">%s</script></div>' "$(b64e "$dir/_tldr.md")"
         fi
+        [[ -n $gate_line ]] && printf '<p class="gate-status">%s</p>' "$(esc "$gate_line")"
         [[ -n $held_html ]] && printf '%s' "$held_html"
         printf '</div>\n'
       fi
       [[ -n $settled_html ]] && printf '  %s\n' "$settled_html"
+      # Only the session where the change was asked for knows what was asked,
+      # so an empty file is the honest answer from any other session. Say so,
+      # rather than leave the reader to wonder whether the block was forgotten.
+      if [[ -s "$dir/_decisions.md" ]]; then
+        printf '  <div class="decisions"><h3>Decisions &amp; drift</h3><div class="md">'
+        printf '<script type="text/markdown">%s</script>' "$(b64e "$dir/_decisions.md")"
+        printf '</div></div>\n'
+      else
+        printf '  <p class="decisions-none">Decisions and drift: not written. Only the session where the change was asked for can tell what drifted from it.</p>\n'
+      fi
       # Closed by default: a reader looks a term up, nobody reads the list.
       if [[ -s "$dir/_glossary.md" ]]; then
         local nterms label="Glossary"
@@ -1581,7 +1625,7 @@ cmd_render() {
         printf '</div></details>\n'
       fi
       printf '  </div>\n'
-    fi
+    }
     [[ -s "$dir/_overview.md" ]] ||
       echo "$PROG: no overview (expected $dir/_overview.md)" >&2
 

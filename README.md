@@ -106,7 +106,11 @@ a command to open the plan in Hunk, and a path to the HTML writeup.
 
 The writeup is a self-contained local file. It opens with an overview of what the branch does
 and why, written so a CTO could read it without the code. A TL;DR for the reviewer follows: the
-biggest risk and where to look first. Below that sits a glossary of the page's terms, closed until
+biggest risk and where to look first. When the review runs in the session where the change was
+asked for, a decisions block comes next. It walks through how the change runs, step by step,
+and marks in bold anything that departs from your last request. It lists the assumptions made,
+and what a fresh reader who never saw the conversation challenged. Any other session leaves the
+block out, and the page says so. Below that sits a glossary of the page's terms, closed until
 you need it. Every group then reads in the order a reviewer needs it: what the issue is and what
 solves it, one concrete example, then the bullets. Around that, a verdict badge per group, a
 collapsed block for the trade-offs, a Mermaid diagram where the substance is a sequence or a race,
@@ -122,9 +126,10 @@ In a repo that keeps a merge-danger verdict (Vendis's `bin/merge-danger`), `hunk
 sets those calls next to the verdict. The TL;DR opens with the verdict and every place the review
 disagrees, each with the agent's reason. A lower is marked "Operator lowering needed". A
 disagreement you settle with a note in Hunk becomes one `bin/merge-danger --finalize` command,
-which whoever runs the review loop records. When the repo's review gate left a record for this
-content, the TL;DR also lists what it held for you, and a closed block lists what it waived or
-accepted as known. All of it is advice: nothing here blocks a review, a write or an approval.
+which whoever runs the review loop records. The TL;DR then says whether a review record covers
+this content. When the repo's review gate left one, the TL;DR also lists what it held for you,
+and a closed block lists what it waived or accepted as known. All of it is advice: nothing here
+blocks a review, a write or an approval.
 `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only when you allowed
 its exact content for that repo. Read the script, then allow it with
 `git config --local --add hunk.mergeDanger <blob id>`; `hunk-plan danger` prints the id. A branch
