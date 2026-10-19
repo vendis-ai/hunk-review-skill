@@ -157,6 +157,7 @@ DIR=$(run_plan report-dir --init 2>/dev/null)
 [[ -f "$DIR/_tldr.md" ]] && ok "scaffolds _tldr.md" || no "scaffolds _tldr.md"
 [[ -f "$DIR/_overview.md" ]] && ok "scaffolds _overview.md" || no "scaffolds _overview.md"
 [[ -f "$DIR/_glossary.md" ]] && ok "scaffolds _glossary.md" || no "scaffolds _glossary.md"
+[[ -f "$DIR/_decisions.md" ]] && ok "scaffolds _decisions.md" || no "scaffolds _decisions.md"
 # Slug rule: lowercase, runs of non-alphanumerics collapse to one hyphen.
 [[ -f "$DIR/security-boundary.md" ]] && ok "slugifies a plain title" || no "slugifies a plain title"
 [[ -f "$DIR/removal-inputs.md" ]] &&
@@ -190,6 +191,16 @@ cat >"$DIR/meta.json" <<JSON
 JSON
 printf -- '- **Goal:** Partners can no longer invite themselves in.\n' >"$DIR/_overview.md"
 printf -- '- One line of TL;DR, closes #12.\n' >"$DIR/_tldr.md"
+cat >"$DIR/_decisions.md" <<'MD'
+#### How it runs
+
+1. A partner opens an invite link.
+2. **The invite is created before the domain check runs** (you asked: "check the domain first").
+
+#### Assumptions and decisions
+
+- The allowlist stays per tenant, because no global list exists.
+MD
 printf -- '- **Gate**: the check that runs before an invite exists.\n- **Invite**: a link that adds one user to one tenant.\n' \
   >"$DIR/_glossary.md"
 printf -- '- Body for the security group.\n' >"$DIR/security-boundary.md"
@@ -228,9 +239,15 @@ assert_eq "$ORDER" 'id="group-security-boundary" id="group-removal-inputs" id="g
 assert_in '<div class="overview"><h3>Overview</h3>' "$OUT" "renders the overview"
 assert_in '<details class="glossary"><summary>Glossary (2 terms)</summary>' "$OUT" \
   "renders the glossary closed, with its term count"
-assert_eq "$(grep -o 'class="overview"\|class="tldr"\|class="glossary"\|class="toc"' "$OUT" | tr '\n' ' ')" \
-  'class="overview" class="tldr" class="glossary" class="toc" ' \
-  "overview, TL;DR and glossary render above the contents, in that order"
+assert_in '<div class="decisions"><h3>Decisions &amp; drift</h3>' "$OUT" "renders the decisions and drift"
+assert_not_in 'class="decisions-none"' "$OUT" "...and no placeholder beside it"
+# Bold is the drift marker, so it must look different from ordinary bold.
+assert_in '.decisions strong { background: var(--rev-bg); color: var(--rev-text);' "$OUT" \
+  "the page marks drift, not merely bolds it"
+assert_not_in 'class="gate-status"' "$OUT" "a repo with no bin/merge-danger gets no gate line"
+assert_eq "$(grep -o 'class="overview"\|class="tldr"\|class="decisions"\|class="glossary"\|class="toc"' "$OUT" | tr '\n' ' ')" \
+  'class="overview" class="tldr" class="decisions" class="glossary" class="toc" ' \
+  "overview, TL;DR, decisions and glossary render above the contents, in that order"
 assert_not_in 'no overview' "$TMP/render.err" "no overview warning when there is one"
 
 assert_in 'No writeup was written' "$OUT" "flags a group with no body"
@@ -301,8 +318,9 @@ echo
 echo "hunk-plan render: readability warnings"
 
 # Each file is put back afterwards, so nothing below sees these.
-for f in _overview.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$DIR/$f" "$TMP/keep.$f"; done
+for f in _overview.md _decisions.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$DIR/$f" "$TMP/keep.$f"; done
 : >"$DIR/_overview.md"
+: >"$DIR/_decisions.md"
 LONG='This sentence is written on purpose to run well past the limit that the renderer allows, so that the readability check has something real to warn about here today.'
 SPAN='`one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two`'
 {
@@ -327,7 +345,24 @@ assert_in 'glossary has 14 terms; keep it to 12' "$TMP/lint.err" "warns about an
 assert_in 'long glossary entry (17 words) for "Wordy"' "$TMP/lint.err" "warns about a long glossary entry"
 assert_in 'no overview' "$TMP/lint.err" "warns about a missing overview"
 [[ -f "$TMP/lint.html" ]] && ok "warnings never stop the render" || no "warnings never stop the render"
-for f in _overview.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$TMP/keep.$f" "$DIR/$f"; done
+# Any session but the one where the change was asked for leaves the file empty. The page
+# says why, instead of looking as if the block was forgotten.
+assert_in '<p class="decisions-none">Decisions and drift: not written. Only the session where the change was asked for can tell what drifted from it.</p>' \
+  "$TMP/lint.html" "an empty _decisions.md says who can write it"
+assert_not_in '<div class="decisions">' "$TMP/lint.html" "...and renders no empty block"
+assert_not_in '_decisions.md' "$TMP/lint.err" "...and is not a warning: an empty file is the honest answer"
+for f in _overview.md _decisions.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$TMP/keep.$f" "$DIR/$f"; done
+
+# The decisions alone are still front matter worth showing.
+for f in _overview.md _tldr.md _glossary.md; do cp "$DIR/$f" "$TMP/keep.$f" && : >"$DIR/$f"; done
+run_plan render -o "$TMP/only.html" >/dev/null 2>&1
+assert_in '<div class="decisions"><h3>Decisions &amp; drift</h3>' "$TMP/only.html" \
+  "decisions render even when the rest of the front matter is empty"
+cp "$DIR/_decisions.md" "$TMP/keep._decisions.md" && : >"$DIR/_decisions.md"
+run_plan render -o "$TMP/none.html" >/dev/null 2>&1
+assert_in '<p class="decisions-none">' "$TMP/none.html" \
+  "...and so does the line saying they were not written"
+for f in _overview.md _tldr.md _decisions.md _glossary.md; do cp "$TMP/keep.$f" "$DIR/$f"; done
 
 OUTDIR=$(dirname "$OUT")
 [[ -f "$OUTDIR/marked.min.js" ]] && ok "copies marked alongside" || no "copies marked alongside"
@@ -576,6 +611,14 @@ assert_in '(current verdict; for earlier content)' "$DOUT" "a verdict for other 
 danger_render >/dev/null
 assert_in '<p class="danger-agree">This review agrees with the verdict.</p>' "$DOUT" "says when the review agrees"
 
+# The TL;DR says whether a review record covers this content. The renderer
+# decides it from the record check, so no written claim goes stale, and it
+# needs no _decisions.md: this report directory's one is empty.
+danger_render >/dev/null
+assert_in '<p class="gate-status">No review record covers this content yet.</p>' \
+  "$DOUT" "with no record, the TL;DR says none covers this content"
+assert_in 'no review record covers this content yet' "$TMP/drender.err" "...and render says so"
+
 cat >"$DGITDIR/review-record.json" <<'JSON'
 { "digest": "d1",
   "polish": { "base": "b0", "batch": [
@@ -590,24 +633,61 @@ danger_render >/dev/null
 assert_in '<div class="held"><h4>Held for you</h4><ul><li><code>STD-HELD-1</code> <code>a.rb:12</code></li></ul></div></div>' \
   "$DOUT" "held items close the TL;DR"
 assert_in '<details class="settled"><summary>Settled by review (3)</summary>' "$DOUT" "settled items sit in a closed block"
+assert_eq "$(grep -o 'class="tldr"\|class="settled"\|class="decisions[a-z-]*"' "$DOUT" | tr '\n' ' ')" \
+  'class="tldr" class="settled" class="decisions-none" ' \
+  "the settled block stays with the TL;DR, before the decisions"
+assert_in '<p class="gate-status">The review gate read this content. What it held for you follows.</p><div class="held">' \
+  "$DOUT" "with a record for this content, the gate read it, just above what it held"
+assert_not_in 'no review record covers' "$TMP/drender.err" "...and render reports nothing missing"
+cp "$DGITDIR/review-record.json" "$TMP/record.keep"
+jq '.polish.batch |= map(select(.disposition != "held"))' "$TMP/record.keep" >"$DGITDIR/review-record.json"
+danger_render >/dev/null
+assert_in '<p class="gate-status">The review gate read this content. It held nothing for you.</p>' \
+  "$DOUT" "...and says so when it held nothing"
+cp "$TMP/record.keep" "$DGITDIR/review-record.json"
 assert_in '<li><strong>Rejected</strong> <code>STD-&lt;REJ&gt;-1</code> <code>bin/x:7</code></li>' "$DOUT" "...escaped"
 assert_in '<li><strong>Waived</strong> <code>STD-WAIVED-1</code> <code>ci.yml</code></li>' "$DOUT" "...a row with no line shows its file"
 assert_in '<li><strong>Accepted as known</strong> a wording nit &lt;kept&gt; (a.rb:1)</li>' "$DOUT" "...and the accepted findings"
 assert_not_in 'STD-FIXED-1' "$DOUT" "fixed items never appear"
 
+cp "$DGITDIR/review-record.json" "$TMP/record.keep"
+printf 'not json\n' >"$DGITDIR/review-record.json"
+danger_render >/dev/null
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "a record that cannot be read is not called one for other content"
+assert_in 'could not read' "$TMP/drender.err" "...and stderr says it could not be read"
+printf '{ "polish": { "batch": [] } }\n' >"$DGITDIR/review-record.json"
+danger_render >/dev/null
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "a record with no digest cannot be dated either"
+assert_in 'names no content digest' "$TMP/drender.err" "...and stderr says it names none"
+assert_not_in 'could not read' "$TMP/drender.err" "...rather than that it could not be read"
+cp "$TMP/record.keep" "$DGITDIR/review-record.json"
+
 MD_DIGEST=d2 danger_render >/dev/null
 assert_not_in 'Held for you' "$DOUT" "a record for other content is left out"
 assert_in 'review-record.json describes other content; left it out' "$TMP/drender.err" "...and stderr says so"
+assert_in '<p class="gate-status">The review record describes other content, so none covers this content yet.</p>' \
+  "$DOUT" "...and the TL;DR says none covers this content"
+assert_in 'no review record covers this content yet' "$TMP/drender.err" "...on stderr too"
 
 git -C "$DANGER" config --unset-all hunk.mergeDanger
 rm -f "$MD_RAN"
 danger_render >/dev/null
 assert_not_in 'Settled by review' "$DOUT" "with the script no longer allowed, the record is left out"
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "...and the TL;DR says the page cannot tell"
 assert_in "review-record.json describes (bin/merge-danger comes with the checked-out branch" "$TMP/drender.err" \
   "...and stderr says how to allow it"
 assert_in "cannot tell whether the plan's mergeDanger describes this content" "$TMP/drender.err" \
   "...and that the verdict's content is unchecked"
 [[ -e $MD_RAN ]] && no "...and render never runs it" || ok "...and render never runs it"
+# With no record file at all, it can tell, allowed or not.
+mv "$DGITDIR/review-record.json" "$TMP/record.aside"
+danger_render >/dev/null
+assert_in '<p class="gate-status">No review record covers this content yet.</p>' "$DOUT" \
+  "...but with no record at all, none covers this content"
+mv "$TMP/record.aside" "$DGITDIR/review-record.json"
 git -C "$DANGER" config --add hunk.mergeDanger "$MD_OID"
 
 # Changed content is content no one has read yet: neither danger nor render
@@ -642,6 +722,8 @@ chmod -x "$DANGER/bin/merge-danger"
 danger_render >/dev/null
 assert_not_in 'Settled by review' "$DOUT" "a record no tool can date is left out"
 assert_in 'cannot tell which content' "$TMP/drender.err" "...and stderr says so"
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "...and the TL;DR says the page cannot tell"
 assert_in 'This review agrees with the verdict.' "$DOUT" "...while the plan's own mergeDanger still renders"
 (cd "$DANGER" && run_plan clear --yes >/dev/null 2>&1)
 

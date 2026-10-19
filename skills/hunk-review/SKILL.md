@@ -54,6 +54,11 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    numstat above shows it. Never run the allow command yourself (step 8 says why), and go on with
    the review without waiting.
 
+   If you will write `_decisions.md` (step 9), check whether the repo's agent instructions name a
+   review entry point every review must go through (Vendis: `vendis-review`). If they name none,
+   start its fresh-eyes reader now, in the background, as step 9 describes. It then reads while
+   you plan.
+
 2. Check for a reviewer config: `.coderabbit.yaml` or `.coderabbit.yml` at repo root. If present,
    it is often the richest source of "what actually matters here and why" in the repo — read it
    as another hypothesis source, alongside the branch name (step 4):
@@ -303,17 +308,19 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    switching between this and other work all day. Paragraphs of narrative are the failure mode
    this step used to produce — don't.
 
-   The page opens with three short blocks: an overview, a TL;DR and a glossary. Then come the
-   group sections. A group section is read by someone who has opened no code yet, so it is
-   written in the order they need it: what the issue is and what fixes it, then one concrete
-   instance of it, then the reasoning. That is three files per group, and the renderer emits them
-   in that order whichever order you write them in.
+   The page opens with four short blocks: an overview, a TL;DR, the decisions and drift, and a
+   glossary. Then come the group sections. A group section is read by someone who has opened no
+   code yet, so it is written in the order they need it: what the issue is and what fixes it,
+   then one concrete instance of it, then the reasoning. That is three files per group, and the
+   renderer emits them in that order whichever order you write them in.
 
-   The page has two readers, and each part is written for one of them:
+   The page has three readers, and each part is written for one of them:
 
    - **The overview is for a CTO.** They want to know what the branch is for and how big it is.
      They read no code, so the overview names parts of the system (signup, the billing job, the
      chat screen), never classes or methods.
+   - **The decisions and drift are for the person who asked for the change.** They know what
+     they asked for. They read this block to find where the build departs from it.
    - **Everything else is for a junior developer.** They know the language and the framework,
      but not this codebase or its domain, and they arrived from a different topic two minutes
      ago. Every section stands on its own: never refer back to "the previous group". The first
@@ -368,7 +375,52 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      for this content (`review-record.json` in the git dir, written by Vendis's review gate), the
      renderer adds the items it held for the reviewer under the bullets and a closed block of the
      ones it waived, rejected or accepted as known. Never re-report an item that record says was
-     fixed.
+     fixed. When the repo keeps a `bin/merge-danger`, the renderer also says whether a review
+     record covers this content, so never write that in these bullets.
+   - `_decisions.md` — **for the person who asked: how the change runs, what you assumed, and
+     where it drifted.** Write it only when the change was asked for in this conversation,
+     whether you or a worker you dispatched built it. In any other session, and whenever you run
+     as a sub-agent, leave it empty. Never infer what was asked for from commit messages or the
+     diff: a guessed intent hides exactly the drift this block exists to show. An empty file
+     renders as one line saying the block was not written, and why. Use these `####` headings,
+     in this order:
+     - `#### How it runs` — a numbered list, one step per item, in the order things happen when
+       the code runs. Use plain words and no code identifiers. Find the user's most recent
+       statement of what they want. Bold the part of a step that departs from it, and end that
+       step with `(you asked: "…")`. Quote the shortest phrase that carries the intent, 10 words
+       or fewer. A drift with no step of its own gets a bold item at the end of the list: a part
+       that was asked for and not built, or a change outside the running code. Bold means
+       drift, so nothing else in this file is bold.
+     - `#### Assumptions and decisions` — one bullet per choice nobody asked you to make: the
+       choice, then why.
+     - `#### Challenged` — what a reader who never saw this conversation found (below). One
+       bullet per finding, led by `Agree:` or `Disagree:`, then the finding and your answer, one
+       sentence each. With no findings, write one line saying why: the reader found nothing, did
+       not run, or is still running.
+
+     **The fresh-eyes reader.** It does not share this conversation's blind spots. Which reader
+     depends on whether the repo has its own review gate:
+     - **The repo's agent instructions name a review entry point every review must go through**
+       (Vendis: `vendis-review`). That gate is the fresh-eyes reader, and it runs once over the
+       whole change. Start no review of your own, and none through the gate either: a second
+       round breaks the gate's own review-once rule. `#### Challenged` says that in one line.
+       When the repo keeps a `bin/merge-danger` (as Vendis does), the line adds that the TL;DR
+       shows whether the gate's record covers this content. The renderer writes that status
+       on every render, from the same check that fills the TL;DR, so it never goes stale.
+       Without a `bin/merge-danger`, the line says this page cannot see the gate's result.
+     - **Any other repo.** Start one sub-agent in step 1, in the background, so it reads while
+       you plan. Give it three things: the user's request in their own words, the change
+       (`git diff <merge-base>` with the merge-base from step 1, plus every file
+       `git ls-files --others --exclude-standard` lists), and the task "attack this change for
+       correctness and simplicity, and report; fix nothing". Never give it this conversation,
+       your plan or your reasons. If it has finished by step 9, read its report before you write
+       this file. If not, write that it is still running. When it lands, add its findings, check
+       `Biggest risk` again and render again. Then tell the user the page changed: how many
+       findings arrived, and whether `Biggest risk` moved. If you cannot start a sub-agent,
+       `#### Challenged` says so.
+
+     An `Agree:` item not yet fixed is a defect. If it is worse than your `Biggest risk`, it
+     becomes the `Biggest risk`.
    - `_glossary.md` — **the terms on this page that a newcomer to this repo would not know.** One
      bullet per term, `- **Term**: meaning.`, in alphabetical order. At most 12 terms, and each
      meaning 12 words or fewer, with no examples and no history. A rule the repo attaches to a
@@ -376,8 +428,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
      domain words, internal names the prose relies on, and team shorthand ("claim", "strong
      read"). Leave out what any developer in this stack knows. If the repo keeps a glossary (`CONTEXT.md`, `GLOSSARY.md`, a
      glossary under `docs/`), take each meaning and spelling from it; never copy its entries
-     whole. The renderer shows the glossary closed, under the TL;DR, so a skimming reader does not
-     pay for it. Leave the file empty when the page needs no glossary.
+     whole. The renderer shows the glossary closed, last in the front matter, so a skimming
+     reader does not pay for it. Leave the file empty when the page needs no glossary.
    - `<group-slug>.why.md` — **required: three short paragraphs with bold labels, one to three
      sentences each, separated by blank lines.** Start from what the code does at all, not from
      what changed in it. When a group bundles several small fixes, the problem names what they
@@ -488,6 +540,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     When step 8 skipped the merge-danger cross-check because the script was not allowed, say so
     in one line. Step 1 already gave the steps, so do not repeat them.
 
+    Say in one line how many items in `_decisions.md` are bold and how many challenges you agreed
+    with, or that the fresh-eyes reader is still running, or that the repo's review gate is the
+    reader. When you left the file empty, say why.
+    When `hunk-plan render` said no review record covers this content, say so. In a repo whose
+    review gate writes that record, its review of this content is still owed.
+
     Point that command at the fork point, not at the three-dot range: `hunk diff <merge-base>`,
     with the merge-base from step 1. The loop in step 11 makes uncommitted fixes, which only a diff
     against the working tree shows, and a file in that diff stays in view after it is committed.
@@ -518,7 +576,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     plan path (`hunk-plan path`), the writeup's `file://` URL, the exact `hunk diff <merge-base>`
     command, the counts from step 10, the number of merge-danger disagreements (step 8), and one
     line saying the caller owns this step — `hunk-plan wait`, then hunk-handle-notes on each go,
-    then the merge-danger changes it lists.
+    then the merge-danger changes it lists. When you left `_decisions.md` empty, add one line for
+    a caller that asked for the change: it holds the conversation you lack. It can start the
+    fresh-eyes reader step 9 describes, write `_decisions.md` in the report directory
+    (`hunk-plan report-dir`) in the format hunk-review's step 9 gives, and then run
+    `hunk-plan render` again. After each go, it keeps that file and the TL;DR's `Biggest risk`
+    current, as step 11 says.
 
         hunk-plan wait
 
@@ -541,10 +604,16 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
       otherwise give them to the user. When `bin/merge-danger` refuses one, report its message
       and go on; a refusal never stops the loop. After any change, run `bin/merge-danger --check` and
       tell the user that the PR body's Merge Danger section is now out of date (in Vendis,
-      vendis-pr-finalize rewrites it). Touch no GitHub yourself. Then re-render the writeup, tell
-      the user what changed and to press `r` in Hunk, and run `hunk-plan wait` again. Never write
-      the plan again inside the loop, not even to refresh its `mergeDanger`: a new plan id would
-      make the open window's next answer count as one for an earlier plan.
+      vendis-pr-finalize rewrites it). Touch no GitHub yourself. When a fix closes the TL;DR's
+      `Biggest risk`, name the next one there. When you wrote `_decisions.md`, bring it up to
+      date. A reviewer instruction that says what the change should do becomes the user's most
+      recent stated intent, so check every step of `#### How it runs` against it. An empty or
+      scope-only instruction leaves the earlier intent standing. A fix that ends a drift removes
+      that bold, and a fixed `Agree:` item says it was fixed. hunk-handle-notes leaves
+      hunk-review's prose alone, so these edits are yours. Then re-render the writeup, tell the
+      user what changed and to press `r` in Hunk, and run `hunk-plan wait` again. Never write the
+      plan again inside the loop, not even to refresh its `mergeDanger`: a new plan id would make
+      the open window's next answer count as one for an earlier plan.
     - `10`, approved. Stop waiting, say so, and finish. Open merge-danger disagreements never
       hold an approval back: the reviewer saw them at the top of the TL;DR.
     - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to
