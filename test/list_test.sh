@@ -45,7 +45,7 @@ assert_match() {
   if grep -Eq -- "$2" "$1"; then ok "$3"; else no "$3 (no line matches /$2/ in: $(cat "$1"))"; fi
 }
 
-TMP=$(mktemp -d)
+TMP=$(CDPATH='' cd -- "$(mktemp -d)" >/dev/null && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
 
 export XDG_STATE_HOME="$TMP/state"
