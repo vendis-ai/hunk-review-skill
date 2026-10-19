@@ -89,8 +89,8 @@ article.doc .md h4, article.doc .md h5, article.doc .md h6 { scroll-margin-top: 
    for. So bold is marked, not merely heavier, and nothing else here is bold. */
 .decisions { border-left: 3px solid var(--rev-border); }
 .decisions h4 { margin: 0.8rem 0 0.2rem; }
-.decisions ol, .decisions ul { margin: 0.3rem 0 0; padding-left: 1.4rem; }
-.decisions li { margin: 0.3rem 0; }
+.decisions .md ol, .decisions .md ul { margin: 0.3rem 0 0; padding-left: 1.4rem; }
+.decisions .md li { margin: 0.3rem 0; }
 .decisions strong { background: var(--rev-bg); color: var(--rev-text); border-radius: 3px; padding: 0 0.2em; }
 .decisions-none { margin: 0; color: var(--muted); font-size: 0.85rem; }
 /* The TL;DR opens with the merge-danger cross-check and closes with whether a

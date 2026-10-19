@@ -76,9 +76,10 @@ Commands:
                         danger), a review record for the current content
                         (review-record.json in the git dir) adds the items
                         held for you under the TL;DR and a closed block of
-                        the settled ones. Whenever the repo has a
-                        bin/merge-danger, the TL;DR also says whether a
-                        review record covers this content. An empty _decisions.md renders
+                        the settled ones. When the repo has a
+                        bin/merge-danger, or a review record sits in its git
+                        dir, the TL;DR also says whether a review record
+                        covers this content. An empty _decisions.md renders
                         as one line saying that only the session where the
                         change was asked for can write it.
                         Sentences over 25 words and an oversized glossary are
@@ -1524,8 +1525,11 @@ cmd_render() {
     elif [[ -z $cur ]]; then
       echo "$PROG: cannot tell which content $record describes (bin/merge-danger --digest gave nothing); left it out" >&2
       gate_line=$gate_unknown gate_owed=0
-    elif [[ -z $rec_digest ]]; then
+    elif [[ -z $rec_digest ]] && ! jq empty "$record" 2>/dev/null; then
       echo "$PROG: could not read $record; left it out" >&2
+      gate_line=$gate_unknown gate_owed=0
+    elif [[ -z $rec_digest ]]; then
+      echo "$PROG: $record names no content digest; left it out" >&2
       gate_line=$gate_unknown gate_owed=0
     elif [[ $rec_digest != "$cur" ]]; then
       echo "$PROG: $record describes other content; left it out" >&2

@@ -656,6 +656,12 @@ danger_render >/dev/null
 assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
   "a record that cannot be read is not called one for other content"
 assert_in 'could not read' "$TMP/drender.err" "...and stderr says it could not be read"
+printf '{ "polish": { "batch": [] } }\n' >"$DGITDIR/review-record.json"
+danger_render >/dev/null
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "a record with no digest cannot be dated either"
+assert_in 'names no content digest' "$TMP/drender.err" "...and stderr says it names none"
+assert_not_in 'could not read' "$TMP/drender.err" "...rather than that it could not be read"
 cp "$TMP/record.keep" "$DGITDIR/review-record.json"
 
 MD_DIGEST=d2 danger_render >/dev/null
@@ -716,6 +722,8 @@ chmod -x "$DANGER/bin/merge-danger"
 danger_render >/dev/null
 assert_not_in 'Settled by review' "$DOUT" "a record no tool can date is left out"
 assert_in 'cannot tell which content' "$TMP/drender.err" "...and stderr says so"
+assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
+  "...and the TL;DR says the page cannot tell"
 assert_in 'This review agrees with the verdict.' "$DOUT" "...while the plan's own mergeDanger still renders"
 (cd "$DANGER" && run_plan clear --yes >/dev/null 2>&1)
 

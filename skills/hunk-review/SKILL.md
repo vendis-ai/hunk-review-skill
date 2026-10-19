@@ -54,8 +54,10 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    numstat above shows it. Never run the allow command yourself (step 8 says why), and go on with
    the review without waiting.
 
-   If you will write `_decisions.md` (step 9) in a repo without its own review gate, start its
-   fresh-eyes reader now, in the background, as step 9 describes. It then reads while you plan.
+   If you will write `_decisions.md` (step 9), check whether the repo's agent instructions name a
+   review entry point every review must go through (Vendis: `vendis-review`). If they name none,
+   start its fresh-eyes reader now, in the background, as step 9 describes. It then reads while
+   you plan.
 
 2. Check for a reviewer config: `.coderabbit.yaml` or `.coderabbit.yml` at repo root. If present,
    it is often the richest source of "what actually matters here and why" in the repo — read it
@@ -575,10 +577,11 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
     command, the counts from step 10, the number of merge-danger disagreements (step 8), and one
     line saying the caller owns this step — `hunk-plan wait`, then hunk-handle-notes on each go,
     then the merge-danger changes it lists. When you left `_decisions.md` empty, add one line for
-    a caller that asked for the change: it holds the conversation you lack. It can write
-    `_decisions.md` in the report directory (`hunk-plan report-dir`), in the format hunk-review's
-    step 9 gives, and then run `hunk-plan render` again. After each go, it keeps that file and
-    the TL;DR's `Biggest risk` current, as step 11 says.
+    a caller that asked for the change: it holds the conversation you lack. It can start the
+    fresh-eyes reader step 9 describes, write `_decisions.md` in the report directory
+    (`hunk-plan report-dir`) in the format hunk-review's step 9 gives, and then run
+    `hunk-plan render` again. After each go, it keeps that file and the TL;DR's `Biggest risk`
+    current, as step 11 says.
 
         hunk-plan wait
 
