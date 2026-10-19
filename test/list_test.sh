@@ -143,7 +143,7 @@ assert_eq "$(row '.session')" "null" "a daemon that does not answer leaves the s
 
 run_list
 assert_match "$OUT" '^AGE +REPO +BRANCH +HEAD +WINDOW +LIVE +NOTES +VIEWED +SENDS$' "text: a header"
-assert_match "$OUT" '^0m +repo-one +review-branch +\+0 +- +\? +- +0/4 +0$' "text: one line for the review"
+assert_match "$OUT" '^0m +repo-one +review-branch +\+0 +- +\? +- +\? +0$' "text: one line for the review"
 
 echo
 echo "the branch moves on"
@@ -240,14 +240,34 @@ assert_eq "$(row '"\(.notes.sends) \(.notes.notesSent) \(.notes.approved)"')" "1
 snapshot "$PLAN_ID" approveReview "[$U1,$U2,$U3,$A_OLD,$A1,$A2]"
 assert_eq "$(row '.notes.approved')" "true" "an approval"
 run_list
-assert_match "$OUT" ' 1/3 +0/4 +1 A$' "text: open/all notes, viewed, sends and A"
+assert_match "$OUT" ' 1/3 +\? +1 A$' "text: open/all notes, viewed, sends and A"
 
-jq -n '{version: 1, entries: {"src/a.ts": "1111", "docs/x.md": "2222", "not-in-plan.rb": "3333"}}' >"${PLAN%.json}.viewed.json"
-assert_eq "$(row '"\(.viewed.marked)/\(.viewed.of)"')" "2/4" "viewed counts marks on the plan's files"
-assert_eq "$(row '.viewedFiles | join(",")')" "docs/x.md,not-in-plan.rb,src/a.ts" "viewedFiles lists every mark"
+AI3=$(jq -c '. + {source: "ai"}' <<<"$(note ai:3 x src/b.ts 20 2026-10-15T12:12:00.000Z)")
+snapshot "$PLAN_ID" toggleViewed "[$U1,$U2,$U3,$A_OLD,$A1,$A2,$AI3]"
+assert_eq "$(row '"\(.notes.user) \(.notes.agent) \(.notes.open)"')" "3 4 0" "a reply Hunk tags \"ai\" answers a note too"
+snapshot "$PLAN_ID" sendToAgent "[$U1,$U2,$U3,$A_OLD,$A1,$A2,$AI3]"
+snapshot "$PLAN_ID" sendToAgent "[$U1,$U2,$U3,$A_OLD,$A1,$A2,$AI3]"
+assert_eq "$(row '.notes.sends')" "3" "every send counts, the same notes sent twice included"
 
-jq -n --arg id "$PLAN_ID" '{version: 1, kind: "go", mode: "fix-clear", planId: $id, createdAt: "2026-10-15T12:06:00.000Z", notes: [{id: "user:1"}, {id: "user:2"}]}' >"$LOOP/last.json"
-assert_eq "$(row '.lastHandoff | "\(.kind) \(.mode) \(.notes) \(.forPlan)"')" "go fix-clear 2 true" "the last hand-off"
+VIEWED="${PLAN%.json}.viewed.json"
+jq -n '{version: 1, entries: {"src/a.ts": "1111", "docs/x.md": "2222", "not-in-plan.rb": "3333"}}' >"$VIEWED"
+assert_eq "$(row '"\(.viewed) \(.viewedFiles)"')" "null null" "marks alone do not say viewed: only the window can tell a stale one"
+jq -n --arg id "$PLAN_ID" '{version: 1, entries: {"src/a.ts": "1111", "docs/x.md": "2222", "src/b.ts": "3333"},
+  shown: {planId: $id, at: "2026-10-15T12:20:00.000Z",
+          files: ["src/a.ts", "src/b.ts", "docs/x.md", "misc.txt", "unplanned.rb"],
+          viewed: ["src/a.ts", "docs/x.md"], changed: ["src/b.ts"]}}' >"$VIEWED"
+assert_eq "$(row '.viewed | "\(.marked)/\(.of) \(.changed) \(.at)"')" "2/5 1 2026-10-15T12:20:00.000Z" \
+  "viewed is what the window showed this plan: marks that match, of the files it showed"
+assert_eq "$(row '.viewedFiles | join(",")')" "docs/x.md,src/a.ts" "viewedFiles lists the files still viewed"
+run_list
+assert_match "$OUT" ' 0/3 +2/5 +3 A$' "text: viewed"
+jq '.shown.planId = "an-earlier-plan"' "$VIEWED" >"$TMP/v" && mv "$TMP/v" "$VIEWED"
+assert_eq "$(row '.viewed')" "null" "what a window showed for another plan says nothing about this one"
+
+jq -n --arg id "$PLAN_ID" '{version: 1, kind: "go", mode: "fix-clear", planId: $id, createdAt: "2026-10-15T12:06:00.000Z",
+  notes: [{id: "user:1"}, {id: "user:2", source: "user"}, {id: "mcp:1", source: "agent"}, {id: "ai:3", source: "ai"}]}' >"$LOOP/last.json"
+assert_eq "$(row '.lastHandoff | "\(.kind) \(.mode) \(.notes) \(.forPlan)"')" "go fix-clear 2 true" \
+  "the last hand-off, counting the user's notes, not the replies"
 printf '{"version":' >"$LOOP/last.json"
 assert_eq "$(row '.lastHandoff')" "null" "a hand-off cut short reads as none, and the row survives"
 
@@ -319,6 +339,34 @@ git init -q .
 run_list --here
 assert_eq "$RC" "0" "a repo with no plan: exit 0"
 grep -q 'no review plan for' "$ERR" && ok "and says so" || no "and says so ($(cat "$ERR"))"
+
+echo
+echo "in-repo plans"
+
+R5="$TMP/repo-in-repo"
+mkdir -p "$R5"
+cd "$R5" || exit 1
+git init -q .
+commit init
+printf '{"version":1,"groups":[]}' | run_plan write --in-repo >/dev/null 2>&1
+R5_KEY=$(basename "$(run_plan path)" .json)
+R6="$TMP/repo-both"
+mkdir -p "$R6"
+cd "$R6" || exit 1
+git init -q .
+commit init
+printf '{"version":1,"groups":[]}' | run_plan write >/dev/null 2>&1
+printf '{"version":1,"groups":[{"title":"Here","files":[{"path":"x"}]}]}' | run_plan write --in-repo >/dev/null 2>&1
+R6_KEY=$(basename "$(run_plan path)" .json)
+cd "$TMP/elsewhere" || exit 1
+run_list --json
+assert_eq "$(jq -r --arg k "$R5_KEY" '[.reviews[] | select(.key == $k) | .plan] | join(",")' "$OUT")" \
+  "$R5/.hunk/review-plan.json" "a plan written into the repo has a row"
+assert_eq "$(jq -r --arg k "$R6_KEY" '[.reviews[] | select(.key == $k) | "\(.plan) \(.groups)"] | join(",")' "$OUT")" \
+  "$R6/.hunk/review-plan.json 1" "with both, one row, for the in-repo plan Hunk loads"
+cd "$R6" || exit 1
+run_list --here --json
+assert_eq "$(jq -r '[.reviews[].plan] | join(",")' "$OUT")" "$R6/.hunk/review-plan.json" "which --here names too"
 
 echo
 echo "past the argument limit"

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { classify, patchDigest, prune, readViewed, toggle, writeViewed, type ViewedState } from "../viewed";
+import { classify, patchDigest, prune, readViewed, shownOf, toggle, writeViewed, type ViewedState } from "../viewed";
 
 function mkdtemp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "review-plan-viewed-test-"));
@@ -103,6 +103,34 @@ describe("prune", () => {
   });
 });
 
+describe("shownOf", () => {
+  const PATCH_B = "diff --git a/b.ts b/b.ts\n+b\n";
+  const files = [
+    { path: "a.ts", patch: PATCH_A2 },
+    { path: "b.ts", patch: PATCH_B },
+    { path: "c.ts", patch: PATCH_B },
+  ];
+
+  test("names the files shown, the ones whose mark matches, and the ones that changed since", () => {
+    const state: ViewedState = {
+      version: 1,
+      entries: { "a.ts": patchDigest(PATCH_A), "b.ts": patchDigest(PATCH_B), "gone.ts": "x" },
+    };
+    expect(shownOf(state, files, "plan-1", new Date("2026-10-19T10:00:00.000Z"))).toEqual({
+      planId: "plan-1",
+      at: "2026-10-19T10:00:00.000Z",
+      files: ["a.ts", "b.ts", "c.ts"],
+      viewed: ["b.ts"],
+      changed: ["a.ts"],
+    });
+  });
+
+  test("names a file once, however often it is listed", () => {
+    const shown = shownOf({ version: 1, entries: {} }, [...files, files[0]!], null, new Date());
+    expect(shown.files).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+});
+
 describe("readViewed / writeViewed round trip", () => {
   test("readViewed on a missing file returns an empty state without throwing", () => {
     const dir = mkdtemp();
@@ -145,6 +173,20 @@ describe("readViewed / writeViewed round trip", () => {
       const ok = writeViewed(filePath, state);
       expect(ok).toBe(true);
       expect(fs.existsSync(filePath)).toBe(true);
+      expect(readViewed(filePath)).toEqual(state);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("writeViewed writes what the window showed next to the marks, and readViewed reads only the marks", () => {
+    const dir = mkdtemp();
+    try {
+      const filePath = path.join(dir, "viewed.json");
+      const state: ViewedState = { version: 1, entries: { "a.ts": patchDigest(PATCH_A) } };
+      const shown = shownOf(state, [{ path: "a.ts", patch: PATCH_A }], "plan-1", new Date());
+      expect(writeViewed(filePath, state, shown)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(filePath, "utf8")).shown).toEqual(shown);
       expect(readViewed(filePath)).toEqual(state);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

@@ -7,6 +7,7 @@ import {
   appendEntry,
   createdEntry,
   journalPath,
+  snapshotDue,
   snapshotEntry,
   snapshotKey,
   type JournalContext,
@@ -109,6 +110,20 @@ describe("snapshotKey", () => {
     expect(snapshotKey([marked({ summary: "edited" })])).not.toBe(base);
     expect(snapshotKey([marked({ resolution: "stale" })])).not.toBe(base);
     expect(snapshotKey([])).not.toBe(base);
+  });
+});
+
+describe("snapshotDue", () => {
+  const key = snapshotKey([marked()]);
+
+  test("skips a snapshot whose notes match the last line", () => {
+    expect(snapshotDue(key, key, "toggleViewed")).toBe(false);
+    expect(snapshotDue(key, snapshotKey([]), "toggleViewed")).toBe(true);
+  });
+
+  test("journals every send and approval, even with the same notes", () => {
+    expect(snapshotDue(key, key, "sendToAgent")).toBe(true);
+    expect(snapshotDue(key, key, "approveReview")).toBe(true);
   });
 });
 

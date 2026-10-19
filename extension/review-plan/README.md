@@ -301,7 +301,10 @@ into a filename.
 Viewed-file state (which files you have marked reviewed, and against which
 patch digest) lives alongside it, at
 `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.viewed.json`,
-and is pruned automatically as files drop out of the changeset.
+and is pruned automatically as files drop out of the changeset. Each write also
+records what the window showed (`shown`: the plan id, the files the plan asks
+for, and which of them are marked against their current patch or changed
+since), because `hunk-plan list` has no patch to check a mark against.
 
 The review loop's hand-off lives in a directory next to them,
 `${XDG_STATE_HOME:-~/.local/state}/hunk/review-plan/<repo-digest>.loop/`:

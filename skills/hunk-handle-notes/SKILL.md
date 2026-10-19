@@ -25,9 +25,10 @@ When `hunk-plan wait` delivered the notes (hunk-review's step 11), work from its
 session has dropped from the daemon.
 
 - `notes` holds every note in the window. Act on the ones marked `"new": true`. The others were
-  handled in an earlier round, and `"source": "agent"` notes are your own earlier replies; read
-  both as context. Reply at each note's `file` and `line`, with `--old-line` when its `side` is
-  `old`. `file` is `null` only when the note's file left the diff before Hunk reported its path.
+  handled in an earlier round, and notes whose `source` is `"agent"` or `"ai"` are your own
+  earlier replies; read both as context. Reply at each note's `file` and `line`, with
+  `--old-line` when its `side` is `old`. `file` is `null` only when the note's file left the diff
+  before Hunk reported its path.
 - `instruction`, when present, is one more request from the reviewer, scoped to the changeset
   like a note. Answer it in the chat, since it has no line to reply on.
 - `mode` sets how far you go:
@@ -198,11 +199,11 @@ the URL from being linked too.
   dropped before you read the notes, run `hunk-plan notes --json`: the review-plan extension
   journals every note the moment it is saved, so the user's notes are there even when no session
   answers. Its notes carry `id`, `source`, `file`, `side`, `line` and `summary` like a
-  hand-off's, but no `"new"`. Treat a user note as open unless an agent note answers it: one
-  whose `parentId` is the note's `id`, or one on the same `file`, `side` and `line` that is no
-  older (`createdAt`, else `recordedAt`). Replies from `comment add` carry no `parentId`, so
-  most answers match by place. If the journal is missing or empty too, ask the user to paste the
-  notes from the window.
+  hand-off's, but no `"new"`. Treat a user note as open unless an agent note (`source` `agent`
+  or `ai`) answers it: one whose `parentId` is the note's `id`, or one on the same `file`, `side`
+  and `line` that is no older (`createdAt`, else `recordedAt`). Replies from `comment add` carry
+  no `parentId`, so most answers match by place. If the journal is missing or empty too, ask the
+  user to paste the notes from the window.
 - Hunk was quit with notes still in it, so `comment list` finds no session. Read them with
   `hunk-plan notes --json` (`--all` if the plan was rewritten since) and work from that. Replies
   go in the chat and the writeup, since no window holds the notes any more.

@@ -49,6 +49,7 @@ import {
   appendEntry,
   createdEntry,
   journalPath,
+  snapshotDue,
   snapshotEntry,
   snapshotKey,
   type CreatedEntry,
@@ -73,6 +74,7 @@ import {
   classify,
   prune,
   readViewed,
+  shownOf,
   toggle,
   viewedStatePath,
   writeViewed,
@@ -251,6 +253,30 @@ function moveToAdjacentGroup(ctx: ExtensionCommandContext, direction: 1 | -1): v
 // a reload.
 // ---------------------------------------------------------------------------
 
+/**
+ * The files the plan asks the reviewer to look at: every group's but a hidden
+ * one's, so a lockfile the plan hides does not count against the review.
+ */
+function reviewFiles(ordered: OrderedResult<ExtensionDiffFile> | null): { path: string; patch: string }[] {
+  if (!ordered) return [];
+  return ordered.groups
+    .filter((group) => !group.hidden)
+    .flatMap((group) => group.files.map((entry) => ({ path: entry.file.path, patch: entry.file.patch })));
+}
+
+/**
+ * Write the marks, and what this window shows of them. `hunk-plan list` reads
+ * the latter, since only the window can tell a mark that still matches its
+ * patch from one the patch moved on from.
+ */
+function saveViewed(repoRoot: string, viewed: ViewedState, ordered: OrderedResult<ExtensionDiffFile> | null): void {
+  writeViewed(
+    viewedStatePath(repoRoot, process.env),
+    viewed,
+    shownOf(viewed, reviewFiles(ordered), loop.planId, new Date())
+  );
+}
+
 function viewedStatusOf(file: ExtensionDiffFile): ViewedStatus {
   const state = store.getSnapshot();
   return classify(state.viewed, [{ path: file.path, patch: file.patch }]).get(file.path) ?? "unseen";
@@ -397,8 +423,9 @@ function journal(
 
 /**
  * Journal the review as this command sees it, when it changed since the last
- * snapshot. Commands are the only place Hunk hands out a snapshot, and the
- * snapshot is what records agent replies, resolutions and deleted notes.
+ * snapshot or the command is a send or an approval. Commands are the only
+ * place Hunk hands out a snapshot, and the snapshot is what records agent
+ * replies, resolutions and deleted notes.
  */
 function journalSnapshot(ctx: ExtensionCommandContext, trigger: string, snapshot?: SnapshotLike | null): void {
   const repoRoot = store.getSnapshot().repoRoot;
@@ -412,7 +439,7 @@ function journalSnapshot(ctx: ExtensionCommandContext, trigger: string, snapshot
     sentIds: loop.sentIds,
   });
   const key = snapshotKey(notes);
-  if (key === loop.journalKey) return;
+  if (!snapshotDue(key, loop.journalKey, trigger)) return;
   if (journal(repoRoot, snapshotEntry(notes, trigger, journalContext(repoRoot)), (m, l) => ctx.notify(m, l))) {
     loop.journalKey = key;
   }
@@ -810,7 +837,7 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
       readViewed(viewedPath),
       files.map((file) => file.path)
     );
-    writeViewed(viewedPath, prunedViewed);
+    saveViewed(repoRoot, prunedViewed, ordered);
 
     const previous = store.getSnapshot();
     store.setState({
@@ -865,7 +892,7 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     const state = store.getSnapshot();
     if (!file || !state.repoRoot) return;
     const nextViewed = toggle(state.viewed, file.path, file.patch);
-    writeViewed(viewedStatePath(state.repoRoot, process.env), nextViewed);
+    saveViewed(state.repoRoot, nextViewed, state.ordered);
     store.setState({ ...state, viewed: nextViewed });
     const status = classify(nextViewed, [{ path: file.path, patch: file.patch }]).get(file.path);
     ctx.notify(status === "viewed" ? `Marked ${basename(file.path)} reviewed` : `Marked ${basename(file.path)} unreviewed`);
@@ -964,6 +991,6 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     markWindowClosed();
     const state = store.getSnapshot();
     if (!state.repoRoot) return;
-    writeViewed(viewedStatePath(state.repoRoot, process.env), state.viewed);
+    saveViewed(state.repoRoot, state.viewed, state.ordered);
   });
 }

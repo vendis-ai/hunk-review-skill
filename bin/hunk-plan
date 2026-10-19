@@ -113,24 +113,28 @@ Commands:
                         taken when one of the extension's keys (S, A, V, X, <,
                         >) runs, so an agent reply shows only once one has.
   list [--json] [--here]
-                        One row per review plan in the state directory, newest
-                        first: repo, branch, plan age, commits the branch moved
-                        since the plan ("rebased" when the plan's commit is no
-                        longer an ancestor; the branch is the one the plan was
-                        written on, whatever the worktree has checked out
-                        now), the Hunk window (open, closed, or
-                        "earlier" when it still shows an earlier plan), a live
-                        Hunk session, open/all user notes, viewed marks against
-                        the plan's files, and sends to the agent (A: approved).
-                        Viewed is a lower bound: a reviewer reads files without
-                        marking them, and a mark left on a file that changed
-                        since still counts. --here lists only this repo's plan,
-                        found as show finds it. --json adds the plan's files,
-                        the viewed ones, the notes sent, the last hand-off, the
-                        door calls, the merge-danger verdict and the writeup;
-                        a value nothing on disk records is null. Plans written
-                        before "head" was stamped, and plans whose branch was
-                        deleted since, show "?" for it.
+                        One row per repo with a review plan, newest first. The
+                        plan is the one Hunk loads: the in-repo plan when there
+                        is one, else the state-dir plan. A row shows the repo,
+                        the branch the plan was written on, the plan's age,
+                        commits that branch moved since ("rebased" when the
+                        plan's commit is no longer an ancestor), the Hunk
+                        window (open, closed, or "earlier" when it still shows
+                        an earlier plan), a live Hunk session, open/all user
+                        notes, viewed files of the files the plan asks for,
+                        and sends to the agent (A: approved). Viewed is what
+                        the Hunk window last showed: files marked against
+                        their current diff, a hidden group's not counted. It
+                        is "?" until a window has shown this plan, and a lower
+                        bound, since a reviewer reads files without marking
+                        them. --here lists only this repo's plan, found as
+                        show finds it. --json adds the plan's files, the
+                        viewed ones, how many changed since they were marked,
+                        the notes sent, the last hand-off, the door calls, the
+                        merge-danger verdict and the writeup; a value nothing
+                        on disk records is null. Plans written before "head"
+                        was stamped, and plans whose branch was deleted since,
+                        show "?" for it.
   danger [--in-repo] [--allowed]
                         Cross-check the plan's door calls against the repo's
                         merge-danger verdict, when the repo has an executable
@@ -577,18 +581,21 @@ cmd_notes() {
 # worktree is gone still lists; what only git could say is null.
 
 # A plan's journal, summed up for its row: user notes, agent replies, the user
-# notes still open, and what reached the agent. A user note is open while it
+# notes still open, and what reached the agent. Hunk tags a reply "agent" or
+# "ai", so every note not tagged "user" is one. A user note is open while it
 # is active and unanswered. hunk-handle-notes answers with `comment add` at the
 # note's file and line, which sets no parentId, so an agent note answers it
 # when it names it as parent or sits on the same file, side and line and is no
 # older. Sends are this plan's "sendToAgent" snapshots; the notes sent are the
-# distinct user notes they held.
+# distinct user notes they held. The extension journals every send and
+# approval; before it did, one whose notes matched the line before was
+# skipped, so an older journal can count fewer sends than there were.
 LIST_JOURNAL_JQ='. as $raw
   | ($raw | '"$NOTES_JQ"') as $notes
   | ($raw | split("\n") | map(fromjson?)
      | map(select(type == "object" and .v == 1 and .event == "snapshot"
                   and (.planId // "") == $plan))) as $snaps
-  | [$notes[] | select(.source == "agent")] as $agent
+  | [$notes[] | select((.source // "user") != "user")] as $agent
   | [$notes[] | select((.source // "user") == "user")] as $user
   | [$snaps[] | select(.trigger == "sendToAgent")] as $sends
   | def answered: . as $n | (.createdAt // .recordedAt // "") as $at
@@ -608,6 +615,12 @@ LIST_JOURNAL_JQ='. as $raw
 # assembles them, so a missing or unreadable file is null in the row, never an
 # error. Only the plan itself must parse. The journal is summed up in the same
 # call, with the $plan and $all that NOTES_JQ reads bound to this plan.
+#
+# Viewed comes from what the Hunk window last showed (viewed.ts shownOf), not
+# from the marks: a mark is good only while its file's patch is unchanged,
+# and only the window has the patch to compare. The window records it with
+# the plan it showed, so another plan's record, or one an older extension
+# never wrote, leaves viewed unknown.
 LIST_ROW_JQ='
   def nn: if . == "" then null else . end;
   def doc: if . == "" then null else (fromjson? // null) end;
@@ -616,7 +629,8 @@ LIST_ROW_JQ='
   | ($planDoc[0]) as $p
   | [$p.groups[]? | select(type == "object")] as $groups
   | ([$groups[] | .files[]? | select(type == "object") | .path | strings] | unique) as $files
-  | ($viewedRaw | doc | .entries? // {} | if type == "object" then . else {} end) as $marks
+  | (($viewedRaw | doc | objects | .shown) // null
+     | if type == "object" and ((.planId // "") == $planId) then . else null end) as $shown
   | ($lastRaw | doc | if type == "object" and (.kind | type) == "string" then . else null end) as $hand
   | (if $journalRaw == "" then null else ($journalRaw | '"$LIST_JOURNAL_JQ"') end) as $journal
   | {
@@ -638,12 +652,17 @@ LIST_ROW_JQ='
       notes: $journal,
       lastHandoff: (if $hand == null then null else {
         kind: $hand.kind, mode: ($hand.mode // null), createdAt: ($hand.createdAt // null),
-        notes: ([$hand.notes[]?] | length),
+        notes: ([$hand.notes[]? | select((.source // "user") == "user")] | length),
         forPlan: (if $planId == "" then null else ($hand.planId // "") == $planId end)
       } end),
-      viewed: {marked: ([$files[] | select($marks[.] != null)] | length), of: ($files | length)},
+      viewed: (if $shown == null then null else {
+        marked: ([$shown.viewed[]? | strings] | unique | length),
+        changed: ([$shown.changed[]? | strings] | unique | length),
+        of: ([$shown.files[]? | strings] | unique | length),
+        at: ($shown.at // null)
+      } end),
       planFiles: $files,
-      viewedFiles: ($marks | keys),
+      viewedFiles: (if $shown == null then null else [$shown.viewed[]? | strings] | unique end),
       groups: ($groups | length),
       doors: ([$groups[] | select(door_ok)] | length),
       oneWay: ([$groups[] | select(.door == "one-way")] | length),
@@ -675,7 +694,7 @@ LIST_TEXT_JQ='
        else .window.state end),
       (if .session == true then "yes" elif .session == false then "no" else "?" end),
       (if .notes == null then "-" else "\(.notes.open)/\(.notes.user)" end),
-      "\(.viewed.marked)/\(.viewed.of)",
+      (if .viewed == null then "?" else "\(.viewed.marked)/\(.viewed.of)" end),
       ( ([(.notes.sends // 0),
           (if .lastHandoff != null and .lastHandoff.kind == "go" and .lastHandoff.forPlan != false then 1 else 0 end)]
          | max | tostring)
@@ -788,14 +807,29 @@ cmd_list() {
     fi
   else
     # The manifest, read once as "<key>|<root>" lines and looked up in bash.
-    local manifest="" nl=$'\n' rest
+    local manifest="" nl=$'\n' rest line in_repo="" taken=$'\n'
     [[ -f $mf ]] && manifest=$(jq -r 'to_entries[] | select(.value | type == "string")
       | "\(.key)|\(.value)"' "$mf" 2>/dev/null) || manifest=""
+    # A repo's in-repo plan comes first, as show resolves it: Hunk loads that
+    # one when both exist. Only the manifest says where such a plan lives, so
+    # one written into a repo by hand, never through write, has no row.
+    while IFS= read -r line; do
+      key=${line%%|*}
+      r=${line#*|}
+      [[ $key =~ ^[0-9a-f]{16}$ && -n $r ]] || continue
+      in_repo=$(in_repo_plan_path "$r")
+      [[ -f $in_repo ]] || continue
+      plans+=("$in_repo")
+      keys+=("$key")
+      roots+=("$r")
+      taken+="$key$nl"
+    done <<<"$manifest"
     manifest="$nl$manifest$nl"
     for plan in "$sdir"/*.json; do
       [[ -f $plan ]] || continue
       key=$(basename "$plan" .json)
       [[ $key =~ ^[0-9a-f]{16}$ ]] || continue
+      [[ $taken == *"$nl$key$nl"* ]] && continue
       rest=${manifest#*"$nl$key|"}
       if [[ $rest != "$manifest" ]]; then r=${rest%%"$nl"*}; else r=""; fi
       plans+=("$plan")

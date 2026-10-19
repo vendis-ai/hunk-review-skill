@@ -23,6 +23,22 @@ export interface ViewedState {
   entries: Record<string, string>;
 }
 
+/**
+ * What the window last showed, written next to the marks for a reader that
+ * cannot recompute a patch digest (`hunk-plan list`). `files` are the files
+ * the plan asks the reviewer to look at; `viewed` are those whose mark
+ * matches their current patch, `changed` those whose patch moved on since.
+ * Only the marks are read back: this is recomputed on every write.
+ */
+export interface ViewedShown {
+  /** The plan the window showed; `null` for a plan written before plan ids, or none. */
+  planId: string | null;
+  at: string;
+  files: string[];
+  viewed: string[];
+  changed: string[];
+}
+
 function emptyState(): ViewedState {
   return { version: 1, entries: {} };
 }
@@ -60,12 +76,16 @@ export function readViewed(filePath: string): ViewedState {
   }
 }
 
-/** mkdir -p the parent, write atomically (tmp file + rename). Never throws; reports success via the return value. */
-export function writeViewed(filePath: string, state: ViewedState): boolean {
+/**
+ * mkdir -p the parent, write atomically (tmp file + rename), with what the
+ * window showed when it is given. Never throws; reports success via the
+ * return value.
+ */
+export function writeViewed(filePath: string, state: ViewedState, shown?: ViewedShown): boolean {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmpPath = `${filePath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(state), "utf8");
+    fs.writeFileSync(tmpPath, JSON.stringify(shown ? { ...state, shown } : state), "utf8");
     fs.renameSync(tmpPath, filePath);
     return true;
   } catch {
@@ -92,6 +112,24 @@ export function classify(
     }
   }
   return result;
+}
+
+/** What a window showing these files records next to the marks. Pure. */
+export function shownOf(
+  state: ViewedState,
+  files: readonly { path: string; patch: string }[],
+  planId: string | null,
+  now: Date
+): ViewedShown {
+  const status = classify(state, files);
+  const paths = [...new Set(files.map((file) => file.path))];
+  return {
+    planId,
+    at: now.toISOString(),
+    files: paths,
+    viewed: paths.filter((p) => status.get(p) === "viewed"),
+    changed: paths.filter((p) => status.get(p) === "changed"),
+  };
 }
 
 /** Drop entries for paths no longer present. Pure -- returns a new object. */

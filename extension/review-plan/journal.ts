@@ -13,7 +13,8 @@
  * Hunk 0.23 gives event handlers no review snapshot; only commands get one. So
  * a saved note is recorded from `note_created`, which carries its body, and the
  * full picture (agent replies, resolutions, deletions) from a snapshot whenever
- * one of this extension's commands runs and the notes have changed. There is
+ * one of this extension's commands runs and the notes have changed, and on
+ * every send and approval, changed or not, since each one counts. There is
  * no delete event: a note missing from a later snapshot of the same window is
  * gone. `window` tells two Hunk windows on one repo apart, since each holds
  * only its own notes. `hunk-plan notes` reads the journal back.
@@ -131,6 +132,18 @@ export function snapshotEntry(notes: readonly MarkerNote[], trigger: string, ctx
 export function snapshotKey(notes: readonly MarkerNote[]): string {
   const sorted = journalNotes(notes).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return JSON.stringify(sorted);
+}
+
+/** The triggers of a hand-off, `S` and `A`: each one is a line of its own. */
+export const HANDOFF_TRIGGERS: ReadonlySet<string> = new Set(["sendToAgent", "approveReview"]);
+
+/**
+ * Whether a snapshot is worth a line. One whose notes match the last line's
+ * is skipped, except for a hand-off: the journal is how `hunk-plan list`
+ * counts sends and approvals, so a second send of the same notes still counts.
+ */
+export function snapshotDue(key: string, lastKey: string, trigger: string): boolean {
+  return key !== lastKey || HANDOFF_TRIGGERS.has(trigger);
 }
 
 /** True when the file is missing, empty, or ends in a newline. */
