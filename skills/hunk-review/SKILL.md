@@ -589,20 +589,24 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 
         hunk-plan wait
 
-    It blocks for at most 8 minutes (`--timeout <seconds>` changes that) and prints the hand-off
-    as JSON. It renders the writeup first, so a step that ran after your last render, yours or a
-    caller's, still reaches the page. Run it the way your harness allows a long command:
+    It blocks for at most 8 minutes (`--timeout <seconds>` changes that) and prints one JSON
+    object whose `kind` says what came back. It renders the writeup first, so a step that ran
+    after your last render, yours or a caller's, still reaches the page. Run it the way your
+    harness allows a long command:
 
-    - Claude Code: in the background (`run_in_background`), then end your turn. The completion
-      notification wakes you with the output and the exit code.
+    - Claude Code: `hunk-plan wait --timeout 3600` in the background (`run_in_background`), then
+      end your turn. A background command is not held to the 10 minutes of a foreground one, so
+      one wait covers the hour this step allows. The completion notification wakes you with the
+      output and the exit code.
     - Codex: in the foreground with `timeout_ms` above the wait, such as 500000 for the default.
       Without it, Codex stops the command after 10 seconds.
     - Anything else: in the foreground. If your shell tool stops commands sooner than 8
       minutes, pass a `--timeout` below that limit.
 
-    Then act on the exit code:
+    Then act on what it printed. Exit 0 covers every answer the loop expects, and the `kind`
+    says which:
 
-    - `0`, go. Handle the notes as hunk-handle-notes describes, in the hand-off's `mode` and
+    - `go`. Handle the notes as hunk-handle-notes describes, in the hand-off's `mode` and
       with its `instruction`; that skill's "Notes from a hand-off" section covers both. Then
       run each merge-danger change it listed (its "Merge-danger changes"): the reviewer confirmed
       them, and you run the loop. Run them only when the repo allows `bin/merge-danger` (step 8);
@@ -620,15 +624,15 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
       plan again inside the loop, not even to refresh its `mergeDanger`: a new plan id would make
       the open window's next answer count as one for an earlier plan, and the write would move
       the writeup's prose aside.
-    - `10`, approved. Stop waiting, say so, and finish. Open merge-danger disagreements never
+    - `approve`. Stop waiting, say so, and finish. Open merge-danger disagreements never
       hold an approval back: the reviewer saw them at the top of the TL;DR.
-    - `2`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the user to
-      ask you to wait again when they are ready. If stderr says it set aside a hand-off from an
-      earlier window, pass on what it says to do: press `r` in Hunk and send again, or, for a
-      window started before plan ids, quit and reopen Hunk.
-    - `3`, nothing to wait on: there is no plan, or Hunk was closed since the plan was written,
-      which also lost its notes. Stop and say which.
-    - Anything else is an error. Report it and stop.
+    - `pending`, nothing yet. Run it again. After an hour with no hand-off, stop and tell the
+      user to ask you to wait again when they are ready. If stderr says it set aside a hand-off
+      from an earlier window, pass on what it says to do: press `r` in Hunk and send again, or,
+      for a window started before plan ids, quit and reopen Hunk.
+    - Exit `3`, nothing to wait on: there is no plan, or Hunk was closed since the plan was
+      written, which also lost its notes. Stop and say which.
+    - Any other exit is an error. Report it and stop.
 
 ## Surface
 

@@ -45,6 +45,14 @@ assert_file() {
 assert_no_file() {
   if [[ -e $1 ]]; then no "$2 (still there: $1)"; else ok "$2"; fi
 }
+# assert_kind <kind> <message>: the wait exited 0 and printed that kind, go,
+# approve or pending. Exit 0 alone says nothing: every expected outcome has it.
+assert_kind() {
+  assert_eq "$RC $(jq -r '.kind' "$OUT" 2>/dev/null)" "0 $1" "$2"
+}
+assert_pending() {
+  assert_kind pending "$1"
+}
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -132,7 +140,7 @@ grep -q 'nothing to wait on' "$ERR" && ok "says why" || no "says why ($(cat "$ER
 
 write_window $$
 run_wait --timeout 0
-assert_eq "$RC" "2" "no plan, but Hunk has the repo open: keeps waiting"
+assert_pending "no plan, but Hunk has the repo open: keeps waiting"
 rm -f "$LOOP/window.json"
 
 printf '{"version":1,"groups":[]}' | run_plan write >/dev/null 2>&1
@@ -142,9 +150,11 @@ echo
 echo "waiting"
 
 run_wait --timeout 0
-assert_eq "$RC" "2" "a plan with no hand-off yet: exit 2"
-assert_eq "$(wc -c <"$OUT" | tr -d ' ')" "0" "prints nothing on stdout while waiting"
+assert_pending "a plan with no hand-off yet: exit 0, kind pending"
+assert_eq "$(jq -c . "$OUT")" '{"version":1,"kind":"pending","waited":0}' "prints how long it waited, and nothing else"
 grep -q "run 'hunk-plan wait' again" "$ERR" && ok "tells the agent to call again" || no "tells the agent to call again"
+run_wait --timeout 01
+assert_eq "$(jq -r '.waited' "$OUT")" "1" "a timeout with a leading zero is still a number in the JSON"
 
 echo
 echo "the writeup, rendered before each wait"
@@ -156,7 +166,7 @@ assert_no_file "$HTML" "no report directory: nothing is rendered"
 REPORT=$(run_plan report-dir --init 2>/dev/null)
 run_wait --timeout 0
 assert_file "$HTML" "with one, wait renders the writeup before it waits"
-assert_eq "$(wc -c <"$OUT" | tr -d ' ')" "0" "...and keeps stdout for the hand-off"
+assert_eq "$(jq -c . "$OUT")" '{"version":1,"kind":"pending","waited":0}' "...and keeps stdout for the wait's own JSON"
 assert_eq "$(grep -vc "run 'hunk-plan wait' again" "$ERR")" "0" "...and render's own output stays quiet"
 # A step a loop runs between its own render and the wait, such as a review
 # gate that writes a new record, still reaches the page.
@@ -167,7 +177,7 @@ grep -q '<div class="decisions">' "$HTML" && ok "a change since the last render 
 echo '{not json' >"$REPORT/meta.json"
 write_marker go
 run_wait --timeout 5
-assert_eq "$RC" "0" "a render that fails never stops the wait"
+assert_kind go "a render that fails never stops the wait"
 grep -q 'could not render the writeup before waiting' "$ERR" && ok "...and says so in one line" ||
   no "...and says so in one line ($(cat "$ERR"))"
 rm -rf "$REPORT" "$HTML"
@@ -177,26 +187,25 @@ echo "hand-off from the extension"
 
 write_marker go
 run_wait --timeout 5
-assert_eq "$RC" "0" "a go marker: exit 0"
+assert_kind go "a go marker: exit 0, kind go"
 assert_eq "$(jq -r '.kind + " " + .mode' "$OUT")" "go fix-clear" "prints kind and mode"
 assert_eq "$(jq -r '.notes[0].file' "$OUT")" "src/a.ts" "prints the notes"
 assert_no_file "$LOOP/go.json" "the marker is consumed"
 assert_file "$LOOP/last.json" "and kept as last.json"
 
 run_wait --timeout 0
-assert_eq "$RC" "2" "a consumed marker is not delivered twice"
+assert_pending "a consumed marker is not delivered twice"
 
 write_marker approve
 run_wait --timeout 5
-assert_eq "$RC" "10" "an approve marker: exit 10"
-assert_eq "$(jq -r '.kind' "$OUT")" "approve" "prints the approval"
+assert_kind approve "an approve marker: exit 0, kind approve"
 
 (
   sleep 1
   write_marker go
 ) &
 run_wait --timeout 10
-assert_eq "$RC" "0" "a marker that arrives mid-wait is picked up"
+assert_kind go "a marker that arrives mid-wait is picked up"
 wait
 
 mkdir -p "$LOOP"
@@ -211,7 +220,7 @@ echo "Hunk window"
 
 write_window $$
 run_wait --timeout 0
-assert_eq "$RC" "2" "an open window: keeps waiting"
+assert_pending "an open window: keeps waiting"
 
 write_window $$ closed
 run_wait --timeout 5
@@ -227,12 +236,12 @@ assert_eq "$RC" "3" "a window whose process is gone: exit 3"
 
 write_window $$ closed none
 run_wait --timeout 0
-assert_eq "$RC" "2" "a window started before plan ids says nothing about a plan that has one"
+assert_pending "a window started before plan ids says nothing about a plan that has one"
 
 write_window $$ closed
 write_marker go
 run_wait --timeout 5
-assert_eq "$RC" "0" "a hand-off left behind by a closed window is still delivered"
+assert_kind go "a hand-off left behind by a closed window is still delivered"
 rm -f "$LOOP/window.json"
 
 echo
@@ -249,29 +258,29 @@ PLAN_ID=$NEXT_ID
 
 write_marker approve "an-earlier-plan"
 run_wait --timeout 0
-assert_eq "$RC" "2" "an approval from a window showing an earlier plan is not delivered"
+assert_pending "an approval from a window showing an earlier plan is not delivered"
 assert_eq "$(jq -r '.kind' "$LOOP/stale.json")" "approve" "it is set aside as stale.json, notes and all"
 assert_no_file "$LOOP/go.json" "and not retried"
 grep -q 'earlier plan; press r in Hunk and send again' "$ERR" && ok "says why, and what to do" || no "says why, and what to do ($(cat "$ERR"))"
 
 write_marker go "$PLAN_ID"
 run_wait --timeout 5
-assert_eq "$RC" "0" "a hand-off for this plan is delivered"
+assert_kind go "a hand-off for this plan is delivered"
 assert_eq "$(jq -r '.planId' "$OUT")" "$PLAN_ID" "and carries the plan id"
 
 write_marker approve none
 run_wait --timeout 0
-assert_eq "$RC" "2" "an approval from a window started before plan ids is not delivered, however recent"
+assert_pending "an approval from a window started before plan ids is not delivered, however recent"
 grep -q 'started before plan ids; quit and reopen Hunk, then send again' "$ERR" &&
   ok "says to reopen Hunk, since r cannot help" || no "says to reopen Hunk, since r cannot help ($(cat "$ERR"))"
 
 write_window $$ closed none
 run_wait --timeout 0
-assert_eq "$RC" "2" "nor does a quit of such a window end the wait"
+assert_pending "nor does a quit of such a window end the wait"
 
 write_window $$ closed "an-earlier-plan"
 run_wait --timeout 0
-assert_eq "$RC" "2" "a window that showed an earlier plan quitting after this one was written does not end the wait"
+assert_pending "a window that showed an earlier plan quitting after this one was written does not end the wait"
 
 write_window $$ closed "$PLAN_ID"
 run_wait --timeout 5
@@ -281,15 +290,15 @@ rm -f "$LOOP/window.json"
 jq 'del(.planId)' "$PLAN" >"$TMP/plan.json" && mv "$TMP/plan.json" "$PLAN"
 write_marker go "some-id"
 run_wait --timeout 5
-assert_eq "$RC" "0" "a plan without an id (written by hand) falls back to file times"
+assert_kind go "a plan without an id (written by hand) falls back to file times"
 write_marker approve none
 touch -t 202001010000 "$LOOP/go.json"
 run_wait --timeout 0
-assert_eq "$RC" "2" "and against such a plan, a hand-off older than it answers an earlier review"
+assert_pending "and against such a plan, a hand-off older than it answers an earlier review"
 write_window $$ closed none
 touch -t 202001010000 "$LOOP/window.json"
 run_wait --timeout 0
-assert_eq "$RC" "2" "as does a window closed before it was written"
+assert_pending "as does a window closed before it was written"
 rm -f "$LOOP/window.json"
 printf '{"version":1,"groups":[]}' | run_plan write >/dev/null 2>&1
 PLAN_ID=$(jq -r '.planId // empty' "$PLAN")
@@ -304,7 +313,7 @@ cat >"$TMP/comments.json" <<'JSON'
 ] }
 JSON
 run_wait --timeout 5
-assert_eq "$RC" "0" "a GO note: exit 0"
+assert_kind go "a GO note: exit 0, kind go"
 assert_eq "$(jq -r '.mode' "$OUT")" "fix-clear" "takes the default mode"
 assert_eq "$(jq -r '.instruction' "$OUT")" "also rename foo" "the text after GO is the instruction"
 assert_eq "$(jq -r '[.notes[].id] | join(",")' "$OUT")" "user:1-1" "the GO note itself is not one of the notes"
@@ -312,7 +321,7 @@ assert_eq "$(jq -r '.notes[0].line' "$OUT")" "3" "notes keep their line"
 grep -q 'user:1-2' "$TMP/hunk-rm.log" && ok "removes the GO note from the session" || no "removes the GO note from the session"
 
 run_wait --timeout 0
-assert_eq "$RC" "2" "a GO note fires once, even if it could not be removed"
+assert_pending "a GO note fires once, even if it could not be removed"
 
 cat >"$TMP/comments.json" <<'JSON'
 { "comments": [
@@ -322,13 +331,13 @@ cat >"$TMP/comments.json" <<'JSON'
 ] }
 JSON
 run_wait --timeout 0
-assert_eq "$RC" "2" "ordinary notes that merely contain go do not fire"
+assert_pending "ordinary notes that merely contain go do not fire"
 
 cat >"$TMP/comments.json" <<'JSON'
 { "comments": [ { "noteId": "user:3-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE" } ] }
 JSON
 run_wait --timeout 5
-assert_eq "$RC" "10" "an APPROVE note: exit 10"
+assert_kind approve "an APPROVE note: exit 0, kind approve"
 assert_eq "$(jq -r '.planId' "$OUT")" "$PLAN_ID" "and carries the plan id"
 
 cat >"$TMP/comments.json" <<'JSON'
@@ -336,21 +345,21 @@ cat >"$TMP/comments.json" <<'JSON'
                   "createdAt": "2020-01-01T00:00:00.000Z" } ] }
 JSON
 run_wait --timeout 0
-assert_eq "$RC" "2" "an APPROVE note written before this plan answers an earlier review"
+assert_pending "an APPROVE note written before this plan answers an earlier review"
 
 cat >"$TMP/comments.json" <<'JSON'
 { "comments": [ { "noteId": "user:5-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE",
                   "createdAt": "2099-01-01T00:00:00.000Z" } ] }
 JSON
 run_wait --timeout 5
-assert_eq "$RC" "10" "one written after the plan counts"
+assert_kind approve "one written after the plan counts"
 
 cat >"$TMP/comments.json" <<'JSON'
 { "comments": [ { "noteId": "user:6-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "APPROVE" } ] }
 JSON
 write_window $$ open
 run_wait --timeout 0
-assert_eq "$RC" "2" "once the extension has opened the repo, typed notes are not read: S and A are the hand-off"
+assert_pending "once the extension has opened the repo, typed notes are not read: S and A are the hand-off"
 rm -f "$LOOP/window.json"
 rm -f "$TMP/comments.json"
 

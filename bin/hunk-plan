@@ -159,9 +159,12 @@ Commands:
   wait [--timeout <seconds>]
                         Block until the reviewer hands the review back from
                         Hunk ("Send review to agent", S) or approves it
-                        (A), for at most <seconds> (default 480). Prints the
-                        hand-off as JSON: kind, mode, instruction and every
-                        note, the reviewer's new ones marked "new": true.
+                        (A), for at most <seconds> (default 480). Prints one
+                        JSON object whose "kind" says what came back. "go"
+                        and "approve" are the hand-off: mode, instruction
+                        and every note, the reviewer's new ones marked
+                        "new": true. "pending" means no answer came in time
+                        ("waited" holds the seconds); run it again.
                         Without the extension, a note typed in Hunk that reads
                         GO (or "GO: <instruction>") or APPROVE does the same
                         through the session daemon, and is removed once read;
@@ -176,9 +179,10 @@ Commands:
                         report directory: whatever ran since the last render
                         reaches the page. Render's warnings stay quiet, and a
                         failed render is one line on stderr.
-                        Exit codes: 0 go, 10 approved, 2 still waiting (run it
-                        again), 3 nothing to wait on (no plan and no Hunk
-                        window, or Hunk was closed since the plan was written).
+                        Exit codes: 0 go, approved or still waiting (the
+                        "kind" says which), 3 nothing to wait on (no plan and
+                        no Hunk window, or Hunk was closed since the plan was
+                        written). Any other exit is an error.
   -h, --help            Show this help.
 
 Must be run inside a git repository; the repo root is resolved via
@@ -1983,20 +1987,19 @@ prose_warnings() {
 # process, so the loop keeps working after a reload has dropped the session
 # from the daemon (modem-dev/hunk#1138). Polling a file once a second is cheap;
 # each `wait` call is still one bounded call for the agent.
+#
+# Every answer the loop expects -- a go, an approval, no answer yet -- exits 0
+# and names itself in the JSON's "kind". An agent's shell tool reports any
+# other exit as a failure, and "no answer yet" comes back every few minutes.
 
-WAIT_GO=0
-WAIT_APPROVED=10
-WAIT_PENDING=2
+WAIT_ANSWERED=0
 WAIT_NOTHING=3
 SENTINEL_EVERY=15
 
-# Print a marker file and exit with the code its kind stands for.
+# Print a marker file; its kind says whether it is a go or an approval.
 emit_marker() {
-  local file="$1" kind
-  kind=$(jq -r '.kind' "$file")
-  jq . "$file"
-  [[ $kind == approve ]] && exit "$WAIT_APPROVED"
-  exit "$WAIT_GO"
+  jq . "$1"
+  exit "$WAIT_ANSWERED"
 }
 
 # True when a hand-off file answers an earlier plan than the one waited on.
@@ -2175,8 +2178,9 @@ cmd_wait() {
       exit "$WAIT_NOTHING"
     fi
     if ((SECONDS - start >= timeout)); then
+      jq -n --arg waited "$timeout" '{version: 1, kind: "pending", waited: ($waited | tonumber)}'
       echo "$PROG: still waiting after ${timeout}s; run 'hunk-plan wait' again" >&2
-      exit "$WAIT_PENDING"
+      exit "$WAIT_ANSWERED"
     fi
     sleep 1
   done
