@@ -101,8 +101,9 @@ article.doc .md h4, article.doc .md h5, article.doc .md h6 { scroll-margin-top: 
 .danger p { margin: 0 0 0.35rem; }
 .danger-src { color: var(--muted); font-size: 0.85rem; }
 .danger-reasons, .danger-agree { color: var(--muted); font-size: 0.9rem; }
-.badge.needs-operator { background: var(--crit-bg); border-color: var(--crit-border); color: var(--crit-text); }
-.badge.needs-note { background: transparent; border-color: var(--muted); color: var(--muted); }
+.disagreements li { margin: 0.6rem 0; }
+.disagreements li > p { margin: 0.15rem 0; }
+.dis-class { color: var(--muted); font-size: 0.9rem; }
 .held { margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
 .held h4 { margin: 0; }
 .held h4, .decisions h4 { color: var(--muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }

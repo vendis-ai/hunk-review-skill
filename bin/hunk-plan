@@ -1241,34 +1241,58 @@ DANGER_WARNINGS_JQ="$DANGER_JQ_DEFS"'
 
 # The plan mergeDanger as an HTML block for the top of the TL;DR, or nothing
 # when it is absent or malformed. $stale is "1" when the content changed since
-# the verdict was read. Each row says what settling it takes, from the values
-# themselves: a lower needs the operator, a raise needs a confirming note.
+# the verdict was read. Each row names both sides, says what each rating means,
+# and tells the reviewer what each choice takes, from the values themselves:
+# keeping the verdict takes nothing, a lower takes the operator's own note, and
+# a raise takes a confirming one.
 DANGER_HTML_JQ="$DANGER_JQ_DEFS"'
   .mergeDanger as $m
   | [ .groups[]? | select(type == "object") | .title ] as $titles
   | select(($m | type) == "object" and rank_of("door"; $m.door) != null and rank_of("depth"; $m.depth) != null)
   | def shown: {"one-way": "One-way", "two-way": "Two-way", critical: "Critical", review: "Review", skim: "Skim"}[.];
+    def means: {"one-way": "a revert does not undo it", "two-way": "a revert undoes it",
+                critical: "read every line", review: "a normal read", skim: "a quick look"}[.];
+    def rated($f):
+      (if $f == "door" then "badge door \(.)" else "badge \(.)" end) as $cls
+      | "<span class=\"\($cls)\">\(shown)</span> (\(means))";
     def link($t): if ($titles | index([$t])) then "<a href=\"#group-\($t | slug_of)\">\($t | @html)</a>" else ($t | @html) end;
     def row:
       . as $r
-      | ( [ (if $r.group != null then link($r.group) elif $r.class != null then "files outside the plan" else empty end),
-            (if ($r.class | type) == "string" then @html "class <code>\($r.class)</code>" else empty end) ]
-          | join(", ") ) as $ctx
-      | "<li><strong>\(if $r.field == "door" then "Door" else "Depth" end)</strong>: "
-        + @html "the verdict says \($r.verdict | shown), this review says \($r.review | shown)"
-        + (if $ctx != "" then " (\($ctx))" else "" end) + "."
-        + (if ($r.reason | type) == "string" and ($r.reason | test("\\S")) then " " + ($r.reason | @html) else "" end)
-        + (if below($r.field; $r.review; $r.verdict)
-           then " <span class=\"badge needs-operator\">Operator lowering needed</span>"
-           else " <span class=\"badge needs-note\">Confirm in a note to raise</span>" end)
-        + "</li>";
+      | [ ($r.files // []) | if type == "array" then .[] | strings else empty end ] as $files
+      | ( if $r.group != null then [link($r.group), ($r.group | tostring)]
+          elif $r.class != null
+          then [ "Files outside the plan"
+                 + (if ($files | length) > 0 then " (" + ($files | map(@html "<code>\(.)</code>") | join(", ")) + ")" else "" end),
+                 "the files outside the plan" ]
+          else ["The whole branch", "the whole branch"] end ) as [$what, $name]
+      | below($r.field; $r.review; $r.verdict) as $lower
+      | ( if $r.field == "door" then "\($name) is \($r.review)"
+          elif $lower then "\($r.review | shown) is enough for \($name)"
+          else "\($name) needs \($r.review | shown)" end ) as $example
+      | "<li><p>" + $what + ": merge-danger says " + ($r.verdict | rated($r.field))
+        + ", hunk-review says " + ($r.review | rated($r.field)) + ".</p>"
+        + (if ($r.class | type) == "string"
+           then "<p class=\"dis-class\">merge-danger flags "
+                + (if $r.group != null then "files in this group" else "them" end)
+                + @html " as <code>\($r.class)</code>.</p>"
+           else "" end)
+        + (if ($r.reason | type) == "string" and ($r.reason | test("\\S"))
+           then "<p>Why hunk-review differs: " + ($r.reason | @html) + "</p>" else "" end)
+        + "<p class=\"dis-call\"><strong>Your call:</strong> to keep \($r.verdict | shown), do nothing. "
+        + "To accept \($r.review | shown), say so in a Hunk note, for example &ldquo;" + ($example | @html)
+        + "&rdquo;, and press S. "
+        + (if $lower then "Only you can lower a rating, and only for the content you saw."
+           else "merge-danger then keeps \($r.review | shown) as the minimum, also after later commits." end)
+        + "</p></li>";
     [ ($m.disagreements // []) | if type == "array" then .[] else empty end | select(valid_row) ] as $rows
   | ( if $m.source == "floor" then "fresh floor; " + (($m.status // "") | if test("\\S") then . else "no current verdict" end)
       elif $m.finalized == false then "current verdict, not finalized"
       else "current verdict" end
       + (if $stale == "1" then "; for earlier content" else "" end) ) as $src
   | "<div class=\"danger\">"
-    + @html "<p class=\"danger-verdict\">Merge danger: <strong>\($m.door) / \($m.depth)</strong> <span class=\"danger-src\">(\($src))</span></p>"
+    + "<p class=\"danger-verdict\">merge-danger rates this branch " + ($m.depth | rated("depth"))
+      + " and " + ($m.door | rated("door")) + ". "
+      + @html "<span class=\"danger-src\">(\($src))</span>" + "</p>"
     + ( $m.blastRadius
         | if type == "object" and (.scope | type) == "string" and (.note | type) == "string"
           then @html "<p class=\"blast-radius\">Blast radius: <strong>\(.scope)</strong> &mdash; \(.note)</p>"
@@ -1278,8 +1302,9 @@ DANGER_HTML_JQ="$DANGER_JQ_DEFS"'
           then "<p class=\"danger-reasons\">One-way because: " + (map(@html) | join("; ")) + "</p>"
           else "" end )
     + ( if ($rows | length) == 0
-        then "<p class=\"danger-agree\">This review agrees with the verdict.</p>"
-        else "<ul class=\"disagreements\">" + ($rows | map(row) | join("")) + "</ul>" end )
+        then "<p class=\"danger-agree\">hunk-review agrees with merge-danger.</p>"
+        else "<p>hunk-review disagrees in \($rows | length) \(if ($rows | length) == 1 then "place" else "places" end):</p>"
+             + "<ul class=\"disagreements\">" + ($rows | map(row) | join("")) + "</ul>" end )
     + "</div>"
 '
 

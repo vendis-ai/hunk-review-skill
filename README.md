@@ -124,12 +124,13 @@ verdict, so it is a second opinion. `hunk-plan write` warns when a one-way group
 
 In a repo that keeps a merge-danger verdict (Vendis's `bin/merge-danger`), `hunk-plan danger` then
 sets those calls next to the verdict. The TL;DR opens with the verdict and every place the review
-disagrees, each with the agent's reason. A lower is marked "Operator lowering needed". A
-disagreement you settle with a note in Hunk becomes one `bin/merge-danger --finalize` command,
-which whoever runs the review loop records. The TL;DR then says whether a review record covers
-this content. When the repo's review gate left one, the TL;DR also lists what it held for you,
-and a closed block lists what it waived or accepted as known. All of it is advice: nothing here
-blocks a review, a write or an approval.
+disagrees. Each row shows both ratings in plain words, the agent's reason, and what you can do.
+To keep merge-danger's rating, do nothing. To accept hunk-review's, say so in a note in Hunk; only
+you can lower a rating. A disagreement you settle with a note becomes one
+`bin/merge-danger --finalize` command, which whoever runs the review loop records. The TL;DR then
+says whether a review record covers this content. When the repo's review gate left one, the TL;DR
+also lists what it held for you, and a closed block lists what it waived or accepted as known. All
+of it is advice: nothing here blocks a review, a write or an approval.
 `bin/merge-danger` comes with the branch under review, so `hunk-plan` runs it only when you allowed
 its exact content for that repo. Read the script, then allow it with
 `git config --local --add hunk.mergeDanger <blob id>`; `hunk-plan danger` prints the id. A branch

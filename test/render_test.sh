@@ -593,26 +593,45 @@ danger_render() {
 DOUT=$(danger_render)
 assert_in '<div class="tldr"><h3>TL;DR</h3><div class="danger">' "$DOUT" \
   "the TL;DR leads with the cross-check, even with an empty _tldr.md"
-assert_in 'Merge danger: <strong>two-way / critical</strong> <span class="danger-src">(current verdict)</span>' "$DOUT" \
-  "shows the verdict and where it came from"
+assert_in '<p class="danger-verdict">merge-danger rates this branch <span class="badge critical">Critical</span> (read every line) and <span class="badge door two-way">Two-way</span> (a revert undoes it). <span class="danger-src">(current verdict)</span></p>' "$DOUT" \
+  "shows the verdict in plain words and where it came from"
 assert_in '<p class="blast-radius">Blast radius: <strong>harness</strong> &mdash; Every later &lt;PR&gt; body.</p>' "$DOUT" \
   "shows the verdict blast radius, escaped"
-assert_in '<strong>Door</strong>: the verdict says Two-way, this review says One-way (<a href="#group-security-boundary">Security boundary</a>). Sent &lt;invites&gt; stay sent. <span class="badge needs-note">Confirm in a note to raise</span>' \
-  "$DOUT" "a raise links its group, gives the reason escaped, and needs a note"
-assert_in '(<a href="#group-harness">Harness</a>, class <code>harness-controls</code>).' "$DOUT" "a class row names its class"
-assert_in '(files outside the plan, class <code>harness-controls</code>)' "$DOUT" "a row for files outside the plan says so"
-assert_eq "$(grep -o 'Operator lowering needed' "$DOUT" | wc -l | tr -d ' ')" "2" "each lower needs the operator"
+assert_in '<p>hunk-review disagrees in 3 places:</p>' "$DOUT" "counts the disagreements"
+assert_in '<li><p><a href="#group-security-boundary">Security boundary</a>: merge-danger says <span class="badge door two-way">Two-way</span> (a revert undoes it), hunk-review says <span class="badge door one-way">One-way</span> (a revert does not undo it).</p><p>Why hunk-review differs: Sent &lt;invites&gt; stay sent.</p>' \
+  "$DOUT" "a row names both sides, links its group, and gives the reason escaped"
+assert_in '<p class="dis-call"><strong>Your call:</strong> to keep Two-way, do nothing. To accept One-way, say so in a Hunk note, for example &ldquo;Security boundary is one-way&rdquo;, and press S. merge-danger then keeps One-way as the minimum, also after later commits.</p>' \
+  "$DOUT" "...and says what a raise takes"
+assert_in '<a href="#group-harness">Harness</a>: merge-danger says <span class="badge critical">Critical</span> (read every line), hunk-review says <span class="badge review">Review</span> (a normal read).</p><p class="dis-class">merge-danger flags files in this group as <code>harness-controls</code>.</p>' \
+  "$DOUT" "a class row names its class"
+assert_in 'To accept Review, say so in a Hunk note, for example &ldquo;Review is enough for Harness&rdquo;, and press S. Only you can lower a rating, and only for the content you saw.' \
+  "$DOUT" "...and says what a lower takes"
+assert_in 'Files outside the plan (<code>zz.rb</code>): merge-danger says <span class="badge critical">Critical</span> (read every line), hunk-review says <span class="badge skim">Skim</span> (a quick look).</p><p class="dis-class">merge-danger flags them as <code>harness-controls</code>.</p>' \
+  "$DOUT" "a row for files outside the plan says so and lists them"
+assert_in '&ldquo;Skim is enough for the files outside the plan&rdquo;' "$DOUT" "...with an example note that names them"
+assert_eq "$(grep -o 'Only you can lower a rating' "$DOUT" | wc -l | tr -d ' ')" "2" "each lower needs the operator"
+assert_not_in 'this review says' "$DOUT" "the old wording is gone"
 assert_not_in 'for earlier content' "$DOUT" "a verdict for this content is not labelled stale"
 
 MD_DIGEST=d2 danger_render >/dev/null
 assert_in '(current verdict; for earlier content)' "$DOUT" "a verdict for other content is labelled, not dropped"
+
+(cd "$DANGER" && run_plan show |
+  jq '.mergeDanger.disagreements = [{field: "depth", verdict: "critical", review: "review", group: null, class: null, reason: ""}]' |
+  run_plan write >/dev/null 2>"$TMP/dwrite.err")
+mv "$DDIR.prev" "$DDIR"
+danger_render >/dev/null
+assert_in '<p>hunk-review disagrees in 1 place:</p><ul class="disagreements"><li><p>The whole branch: merge-danger says <span class="badge critical">Critical</span>' \
+  "$DOUT" "a whole-change row names the whole branch"
+assert_in '&ldquo;Review is enough for the whole branch&rdquo;' "$DOUT" "...in its example note too"
+assert_not_in 'Why hunk-review differs' "$DOUT" "a row with no reason gets no reason line"
 
 (cd "$DANGER" && run_plan show | jq '.mergeDanger.disagreements = []' | run_plan write >/dev/null 2>"$TMP/dwrite.err")
 # A new plan starts a new writeup; a session that replans takes back what still applies.
 assert_in "moved the earlier writeup to $DDIR.prev" "$TMP/dwrite.err" "writing the plan again moves the writeup aside"
 mv "$DDIR.prev" "$DDIR"
 danger_render >/dev/null
-assert_in '<p class="danger-agree">This review agrees with the verdict.</p>' "$DOUT" "says when the review agrees"
+assert_in '<p class="danger-agree">hunk-review agrees with merge-danger.</p>' "$DOUT" "says when the review agrees"
 
 # The TL;DR says whether a review record covers this content. The renderer
 # decides it from the record check, so no written claim goes stale, and it
@@ -727,7 +746,7 @@ assert_not_in 'Settled by review' "$DOUT" "a record no tool can date is left out
 assert_in 'cannot tell which content' "$TMP/drender.err" "...and stderr says so"
 assert_in '<p class="gate-status">This page cannot tell whether a review record covers this content.</p>' "$DOUT" \
   "...and the TL;DR says the page cannot tell"
-assert_in 'This review agrees with the verdict.' "$DOUT" "...while the plan's own mergeDanger still renders"
+assert_in 'hunk-review agrees with merge-danger.' "$DOUT" "...while the plan's own mergeDanger still renders"
 (cd "$DANGER" && run_plan clear --yes >/dev/null 2>&1)
 
 # A review asks at its start, before it has written a plan.

@@ -275,7 +275,9 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    Never change a door or an importance after reading the verdict. Your calls are worth something
    only because you made them before you read it, so a difference stays a disagreement, and the
    reviewer settles it. Write each row's `reason`: one or two sentences on why your call
-   differs, even when the honest answer is that you missed what the class names. Read
+   differs, even when the honest answer is that you missed what the class names. The writeup
+   already shows both ratings and what the reviewer can do, so give only the evidence: "The hook
+   diff changes only two lines of help text." Never write "I", and never restate either rating. Read
    `.github/merge-danger.yml` for each class's reason text, and nothing else from it. Then add the
    object to the plan as its top-level `mergeDanger` and write the plan again. `hunk-plan write`
    warns about a row with no reason, a row naming a group the plan does not have, and a
