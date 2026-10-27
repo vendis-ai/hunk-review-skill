@@ -593,7 +593,29 @@
     var dark = window.matchMedia('(prefers-color-scheme: dark)').matches &&
       document.documentElement.getAttribute('data-theme') !== 'light';
     if (document.documentElement.getAttribute('data-theme') === 'dark') dark = true;
-    mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral' });
+    // A diagram is agent-written text drawn into this page, so it gets no say
+    // over how it is drawn. "strict" turns off click handlers and script
+    // links and sanitizes labels. `secure` lists the keys a diagram's front
+    // matter or %%{init}%% directive may not change; Mermaid's own list is kept
+    // and the keys below are added. Bounded size and edges keep one diagram
+    // from hanging the page. Mermaid's error drawing is off: a diagram that
+    // does not parse stays as its source text instead of a bomb in the page.
+    var secure = ((mermaid.mermaidAPI && mermaid.mermaidAPI.defaultConfig &&
+      mermaid.mermaidAPI.defaultConfig.secure) || []).slice();
+    ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'maxEdges',
+      'suppressErrorRendering', 'theme', 'themeCSS', 'themeVariables',
+      'dompurifyConfig', 'fontFamily', 'altFontFamily'].forEach(function (key) {
+      if (secure.indexOf(key) === -1) secure.push(key);
+    });
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: dark ? 'dark' : 'neutral',
+      securityLevel: 'strict',
+      maxTextSize: 50000,
+      maxEdges: 500,
+      suppressErrorRendering: true,
+      secure: secure
+    });
     mermaidReady = true;
   }
 
@@ -604,9 +626,19 @@
     initMermaid();
     var pending = pane.querySelectorAll('pre.mermaid:not([data-processed])');
     if (!pending.length) return null;
+    // Mermaid empties a node it cannot draw. Keep the source, so a diagram that
+    // does not parse reads as its text and not as a gap in the page.
+    var sources = [];
+    for (var i = 0; i < pending.length; i++) sources.push(pending[i].textContent);
+    function keepFailed() {
+      for (var j = 0; j < pending.length; j++) {
+        if (!pending[j].querySelector('svg')) pending[j].textContent = sources[j];
+      }
+    }
     try {
-      var run = mermaid.run({ nodes: pending });
-      return run && typeof run.then === 'function' ? run : null;
+      var run = mermaid.run({ nodes: pending, suppressErrors: true });
+      if (!run || typeof run.then !== 'function') return null;
+      return run.then(keepFailed, keepFailed);
     } catch (e) {
       return null; /* a malformed diagram must not take the rest of the page down */
     }

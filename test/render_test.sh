@@ -94,6 +94,25 @@ flowchart LR
   A[in] --> B[out]
 ```
 
+```mermaid
+%%{init: {"securityLevel": "loose"}}%%
+flowchart LR
+  H[hostile-call] --> K[hostile-link]
+  click H call hostileCall()
+  click K href "javascript:hostileHref()"
+```
+
+```mermaid
+%%{init: {"themeCSS": ".node rect { fill: darkorange; }"}}%%
+flowchart LR
+  T[themed-diagram] --> U[end]
+```
+
+```mermaid
+flowchart LR
+  this is not a diagram ((
+```
+
 Hostile input: <script>alert(1)</script>
 
 ## Consistency Model
@@ -882,6 +901,20 @@ JSON
   assert_not_in 'alert(1)' "$TMP/dom.html" "strips a script tag out of a converted doc"
   assert_in '<table>' "$TMP/dom.html" "converts a GFM table"
   assert_in 'aria-roledescription="flowchart' "$TMP/dom.html" "renders a fenced mermaid diagram"
+  # A diagram can carry directives of its own. With "securityLevel": "loose" or a
+  # click, Mermaid would bind a handler or write a javascript: link into the page.
+  # The diagram must still draw, with neither, and the strict level held.
+  assert_in 'hostile-call' "$TMP/dom.html" "a diagram with click and init directives still renders"
+  assert_not_in 'hostileCall' "$TMP/dom.html" "a click callback is not kept"
+  assert_not_in 'hostileHref' "$TMP/dom.html" "a click link is not kept"
+  assert_not_in 'javascript:' "$TMP/dom.html" "no javascript: link reaches the page"
+  # themeCSS is a second way for a diagram to write into the page's styles.
+  assert_in 'themed-diagram' "$TMP/dom.html" "a diagram with a themeCSS directive still renders"
+  assert_not_in 'darkorange' "$TMP/dom.html" "a directive cannot inject its own CSS"
+  # A diagram that does not parse stays as its source. Mermaid's own error
+  # drawing (the bomb and "Syntax error in text") is not put into the page.
+  assert_in 'this is not a diagram' "$TMP/dom.html" "a malformed diagram stays as its source text"
+  assert_not_in 'Syntax error in text' "$TMP/dom.html" "and no error drawing is added to the page"
   assert_in 'id="pane-review" hidden' "$TMP/dom.html" "routing hides the review pane on a doc hash"
 
   # Frontmatter: `---\nstatus: ...\n---` otherwise parses as a setext heading,
