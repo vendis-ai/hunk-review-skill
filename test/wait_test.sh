@@ -196,6 +196,24 @@ assert_file "$LOOP/last.json" "and kept as last.json"
 run_wait --timeout 0
 assert_pending "a consumed marker is not delivered twice"
 
+# The answer is printed first and archived after. If it cannot be printed, the
+# marker stays where it was, so the next wait offers the same answer.
+rm -f "$LOOP/last.json"
+write_marker go
+run_plan wait --timeout 5 >/dev/full 2>"$ERR"
+RC=$?
+assert_eq "$RC" "1" "a wait whose answer cannot be written fails"
+assert_file "$LOOP/go.json" "and leaves the marker in place"
+assert_no_file "$LOOP/last.json" "and does not archive it"
+assert_eq "$(find "$LOOP" -name 'taken.*' | wc -l | tr -d ' ')" "0" "and leaves no claimed copy behind"
+grep -q 'could not write' "$ERR" && ok "and says why" || no "and says why ($(cat "$ERR"))"
+
+run_wait --timeout 5
+assert_kind go "the next wait prints the same answer"
+assert_eq "$(jq -r '.notes[0].file' "$OUT")" "src/a.ts" "with its notes"
+assert_no_file "$LOOP/go.json" "then consumes the marker"
+assert_file "$LOOP/last.json" "and archives it"
+
 write_marker approve
 run_wait --timeout 5
 assert_kind approve "an approve marker: exit 0, kind approve"
@@ -322,6 +340,24 @@ grep -q 'user:1-2' "$TMP/hunk-rm.log" && ok "removes the GO note from the sessio
 
 run_wait --timeout 0
 assert_pending "a GO note fires once, even if it could not be removed"
+
+# Same rule as the extension's hand-off: a note whose answer cannot be printed
+# is not spent, so the next wait still finds it.
+cat >"$TMP/comments.json" <<'JSON'
+{ "comments": [ { "noteId": "user:9-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "GO: once more" } ] }
+JSON
+rm -f "$LOOP/last.json" "$TMP/hunk-rm.log"
+run_plan wait --timeout 5 >/dev/full 2>"$ERR"
+RC=$?
+assert_eq "$RC" "1" "a GO note whose answer cannot be written fails"
+assert_no_file "$LOOP/last.json" "and is not archived"
+grep -q 'user:9-1' "$LOOP/sentinels" 2>/dev/null && no "and is not marked as fired" || ok "and is not marked as fired"
+assert_no_file "$TMP/hunk-rm.log" "and is not removed from the session"
+run_wait --timeout 5
+assert_kind go "the next wait finds the same note"
+assert_eq "$(jq -r '.instruction' "$OUT")" "once more" "with its instruction"
+assert_file "$LOOP/last.json" "and archives it"
+rm -f "$TMP/comments.json"
 
 cat >"$TMP/comments.json" <<'JSON'
 { "comments": [

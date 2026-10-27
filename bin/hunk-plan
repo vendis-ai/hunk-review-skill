@@ -183,6 +183,9 @@ Commands:
                         "kind" says which), 3 nothing to wait on (no plan and
                         no Hunk window, or Hunk was closed since the plan was
                         written). Any other exit is an error.
+                        The answer is printed before the hand-off is spent:
+                        if stdout cannot take it, wait fails and the next
+                        call offers the same answer.
   -h, --help            Show this help.
 
 Must be run inside a git repository; the repo root is resolved via
@@ -2021,10 +2024,17 @@ WAIT_ANSWERED=0
 WAIT_NOTHING=3
 SENTINEL_EVERY=15
 
-# Print a marker file; its kind says whether it is a go or an approval.
+# Print a marker; its kind says whether it is a go or an approval. The answer
+# goes out before anything is spent: when stdout cannot take it, this returns
+# 1 and the caller puts the marker back, so the next wait offers it again.
 emit_marker() {
-  jq . "$1"
-  exit "$WAIT_ANSWERED"
+  printf '%s\n' "$1" | jq . || return 1
+}
+
+# The answer could not be written. Say so and fail; the caller has already put
+# the marker back.
+answer_lost() {
+  die "could not write the answer; it is kept and the next wait offers it again"
 }
 
 # True when a hand-off file answers an earlier plan than the one waited on.
@@ -2065,8 +2075,16 @@ take_marker() {
     fi
     return 1
   fi
+  # Answer first, archive after. The claim stays in $taken meanwhile, so a
+  # second waiter still gets nothing; if the answer cannot be written, the
+  # claim goes back to go.json unless a newer hand-off has already replaced it.
+  if ! emit_marker "$(<"$taken")"; then
+    mv -n "$taken" "$loop/go.json" 2>/dev/null || true
+    rm -f "$taken"
+    answer_lost
+  fi
   mv -f "$taken" "$loop/last.json"
-  emit_marker "$loop/last.json"
+  exit "$WAIT_ANSWERED"
 }
 
 # The fallback when the extension did not load: a note typed in Hunk that reads
@@ -2130,12 +2148,15 @@ take_sentinel() {
           + (if .createdAt then {createdAt} else {} end) ]
       }' 2>/dev/null) || return 1
 
+  # Answer first. The note is spent (recorded, removed, archived) only once the
+  # answer is out; if it cannot be written, the note is found again next time.
+  emit_marker "$marker" || answer_lost
   id=$(printf '%s' "$marker" | jq -r '.sentinel')
   mkdir -p "$loop"
   printf '%s\n' "$id" >>"$loop/sentinels"
   hunk session comment rm --repo "$root" "$id" >/dev/null 2>&1 || true
   printf '%s\n' "$marker" >"$loop/last.json"
-  emit_marker "$loop/last.json"
+  exit "$WAIT_ANSWERED"
 }
 
 # True when Hunk had this repo open for the current plan and has quit since,
