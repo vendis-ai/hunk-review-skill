@@ -9,12 +9,12 @@
 # here, via absolute entries in hunk's own config. See the config step below
 # for why that is a correctness requirement rather than a preference.
 #
-# Re-running is safe. Nothing is overwritten unless it is a symlink this
-# script owns.
+# Re-running is safe. Nothing is overwritten unless it is a symlink that
+# resolves into this checkout.
 
 set -euo pipefail
 
-REPO=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+REPO=$(cd -P -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)
 
 DRY=0
 for arg in "$@"; do
@@ -40,27 +40,62 @@ t()     { printf '%s' "${1/#"$HOME"/\~}"; }
 FAILED=0
 
 # ── guards ───────────────────────────────────────────────────────────────────
-# Refuse if a destination directory is itself a symlink resolving back into
-# this repo: we would then write per-skill symlinks into our own working tree.
-guard_dest() {
-  local dest=$1
-  [ -L "$dest" ] || return 0
-  local resolved
-  resolved=$(readlink -f -- "$dest")
+# True when $1 resolves into this checkout. Compares physical paths: $REPO is
+# already physical (cd -P, pwd -P) and readlink -f resolves every symlink in
+# $1, so a different spelling of the checkout cannot hide it.
+#
+# BSD/macOS readlink -f fails when the final target is missing, which is what a
+# stale link this checkout made looks like (a renamed skill). For a symlink,
+# fall back one level: resolve the target's parent folder physically and append
+# the target's name. If that fails too, the answer is "not ours".
+in_repo() {
+  local resolved link dir base parent
+  if resolved=$(readlink -f -- "$1" 2>/dev/null) && [ -n "$resolved" ]; then
+    :
+  elif [ -L "$1" ]; then
+    link=$(readlink -- "$1") || return 1
+    case $link in
+      /*) ;;
+      *) link=$(dirname -- "$1")/$link ;;
+    esac
+    dir=$(dirname -- "$link")
+    base=$(basename -- "$link")
+    case $base in
+      . | .. | '') return 1 ;;
+    esac
+    parent=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 1
+    resolved=$parent/$base
+  else
+    return 1
+  fi
   case $resolved in
-    "$REPO" | "$REPO"/*)
-      err "$dest is a symlink into this repo ($resolved)."
-      err "Installing would write symlinks into this checkout. Aborting."
-      exit 1 ;;
+    "$REPO" | "$REPO"/*) return 0 ;;
   esac
+  return 1
 }
 
-# Symlink $2 -> $1, idempotently. Never clobbers a real file or directory.
+# Refuse if a destination directory resolves back into this repo: we would then
+# write per-skill symlinks into our own working tree.
+guard_dest() {
+  local dest=$1
+  in_repo "$dest" || return 0
+  err "$dest resolves into this repo ($(readlink -f -- "$dest"))."
+  err "Installing would write symlinks into this checkout. Aborting."
+  exit 1
+}
+
+# Symlink $2 -> $1, idempotently. Never clobbers a real file or directory, nor
+# a symlink that does not resolve into this repo.
 link() {
   local src=$1 dst=$2
   if [ -L "$dst" ]; then
     if [ "$(readlink -f -- "$dst" 2>/dev/null)" = "$(readlink -f -- "$src")" ]; then
       ok "$(t "$dst") (already linked)"
+      return 0
+    fi
+    if ! in_repo "$dst"; then
+      err "$(t "$dst") is a symlink this checkout did not make -- refusing to replace it"
+      FAILED=1
       return 0
     fi
     would && { ok "would relink $(t "$dst") -> $src"; return 0; }

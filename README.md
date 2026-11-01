@@ -321,6 +321,7 @@ answers in the chat and the writeup.
 | `test/wait_test.sh` | Tests for the review loop's `hunk-plan wait`. |
 | `test/notes_test.sh` | Tests for reading the notes journal back with `hunk-plan notes`. |
 | `test/list_test.sh` | Tests for `hunk-plan list` and the head and branch `write` stamps. |
+| `test/install_test.sh` | Tests for `install.sh`'s destination checks, run on a copy against a temp HOME. |
 | `test/keymap_check.sh` | Fails when a new Hunk release claims a key one of the extensions binds. |
 | `docs/img/` | The screenshots above. |
 
