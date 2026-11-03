@@ -31,7 +31,8 @@ Usage: hunk-plan <command> [options]
 Commands:
   path [--in-repo]     Print the plan path (state-dir path by default,
                         <repoRoot>/.hunk/review-plan.json with --in-repo).
-  write [--in-repo]     Read a plan as JSON on stdin, validate it (version==1,
+  write [--in-repo] [--base <ref>]
+                        Read a plan as JSON on stdin, validate it (version==1,
                         a "groups" array), and write it atomically to the
                         resolved path (default: state-dir path). Each write
                         stamps a fresh "planId" into the stored plan, which
@@ -45,8 +46,23 @@ Commands:
                         Skim, an unknown "door" value, a malformed
                         "blastRadius", and a "mergeDanger" that is malformed,
                         out of date with the groups, or has a disagreement
-                        with no reason.
-  show                  Print the resolved plan (checks HUNK_REVIEW_PLAN, then
+                        with no reason. With --base <ref> (or --base=<ref>),
+                        the commit the review diffs against (the merge-base),
+                        it also warns, once per annotation, about a ranged
+                        annotation that lands in no hunk of that diff: the
+                        extension skips it when the plan loads. The warning
+                        names the file path and the annotation's index (from
+                        0). An untracked file gets the one added hunk Hunk
+                        builds for it (none for an empty, binary or oversized
+                        file; a symlink is one line, its target path); a pure
+                        rename, a binary file or a file outside the diff has
+                        no hunk. Only a path's first entry counts, as when the
+                        plan loads. The check is an approximation of Hunk's
+                        own hunks; where it cannot tell, it says an annotation
+                        is not confirmed. Without --base it says the ranges were not
+                        checked. The plan is written either way; the write
+                        still exits 0.
+  show                 Print the resolved plan (checks HUNK_REVIEW_PLAN, then
                         the in-repo path, then the state-dir path -- same
                         order plan.ts uses) or exit 1 naming what was checked.
   sidecar [--in-repo] [-o <path>]
@@ -285,6 +301,252 @@ cmd_path() {
   printf '%s\n' "$target"
 }
 
+# patch_hunk_ranges: read a unified diff on stdin and print one line per side of
+# every hunk, "path<TAB>old|new<TAB>first<TAB>last", the way the review-plan
+# extension reads Hunk's patch. Git quotes a path with a quote, a backslash or a
+# control character in the headers; the awk decodes that form. A path with a tab
+# or a newline cannot be carried on a result line and is left out (the plan side
+# already said so).
+patch_hunk_ranges() {
+  # LC_ALL=C: awk's %c prints a raw byte only in the C locale; in a UTF-8 locale
+  # it would turn an octal escape such as \303 into a two-byte character, and a
+  # non-ASCII path would never match its plan entry.
+  LC_ALL=C awk '
+    function dec(s,    out, i, c, k) {
+      out = ""
+      for (i = 2; i < length(s); i++) {
+        c = substr(s, i, 1)
+        if (c != "\\") { out = out c; continue }
+        i++; c = substr(s, i, 1)
+        if (c == "t") out = out "\t"
+        else if (c == "n") out = out "\n"
+        else if (c ~ /[0-7]/) {
+          k = substr(s, i, 1) * 64 + substr(s, i + 1, 1) * 8 + substr(s, i + 2, 1); i += 2
+          out = out sprintf("%c", k)
+        } else out = out c
+      }
+      return out
+    }
+    function name(s, prefix) {
+      sub(/\t.*$/, "", s)
+      if (substr(s, 1, 1) == "\"") s = dec(s)
+      if (substr(s, 1, length(prefix)) == prefix) s = substr(s, length(prefix) + 1)
+      return s
+    }
+    /^diff --git / { inhunk = 0; path = ""; next }
+    !inhunk && /^--- / { old = substr($0, 5); if (old != "/dev/null") old = name(old, "a/"); next }
+    !inhunk && /^\+\+\+ / {
+      path = substr($0, 5)
+      if (path == "/dev/null") path = old; else path = name(path, "b/")
+      next
+    }
+    /^@@ / {
+      inhunk = 1
+      if (path ~ /[\t\n]/) next
+      split(substr($2, 2), o, ","); split(substr($3, 2), n, ",")
+      oc = (o[2] == "" ? 1 : o[2] + 0); nc = (n[2] == "" ? 1 : n[2] + 0)
+      if (oc > 0) printf "%s\told\t%d\t%d\n", path, o[1], o[1] + oc - 1
+      if (nc > 0) printf "%s\tnew\t%d\t%d\n", path, n[1], n[1] + nc - 1
+    }
+  '
+}
+
+# untracked_hunks <root> <path>: the hunks Hunk shows for an untracked file, in
+# patch_hunk_ranges' format on stdout. Hunk (0.20, src/core/vcs/untracked.ts)
+# builds an untracked file's patch itself, so the rules below are its own:
+#   - a symlink to a directory is left out of the review;
+#   - any other symlink is one added line holding its target path (mode 120000),
+#     dangling or not, whatever the target holds;
+#   - a regular file over 1,000,000 bytes, or with more than 20,000 lines in its
+#     first 256 KiB, is skipped as too large;
+#   - a file whose first 8,000 bytes hold a NUL, or at least 30% control bytes
+#     (0-6, 14-31, 127), is skipped as binary;
+#   - an empty file has no hunk; any other file is one added hunk, new lines 1
+#     to its last line.
+# The hunk of a file that is shown comes from the diff git produces for it
+# (`git diff --no-index` from /dev/null), which agrees with Hunk on symlinks,
+# dangling links, newline-only files and a missing final newline.
+# Exit 0: the hunks are on stdout. Exit 1: Hunk shows the file with no hunk;
+# a reason is on stdout. Exit 2: the rules cannot be matched for this file;
+# a reason is on stdout.
+untracked_hunks() {
+  local root="$1" path="$2" abs size prefix nul ctl lines patch
+  abs="$root/$path"
+  if [[ -L $abs ]]; then
+    if [[ -d $abs ]]; then
+      echo "is an untracked symlink to a directory, which Hunk leaves out of the review"
+      return 1
+    fi
+  elif [[ ! -f $abs ]]; then
+    echo "is an untracked file that is neither a regular file nor a symlink, so $PROG cannot tell what Hunk shows"
+    return 2
+  else
+    size=$(wc -c <"$abs" 2>/dev/null) || size=""
+    size=${size//[!0-9]/}
+    if [[ -z $size ]]; then
+      echo "is an untracked file $PROG cannot read, so it cannot tell what Hunk shows"
+      return 2
+    fi
+    if ((size == 0)); then
+      echo "is an empty untracked file, which has no hunk"
+      return 1
+    fi
+    if ((size > 1000000)); then
+      echo "is an untracked file over 1,000,000 bytes, which Hunk skips as too large"
+      return 1
+    fi
+    lines=$(head -c 262144 "$abs" 2>/dev/null | awk 'END { print NR }')
+    if ((${lines:-0} > 20000)); then
+      echo "is an untracked file with more than 20,000 lines, which Hunk skips as too large"
+      return 1
+    fi
+    prefix=$(head -c 8000 "$abs" 2>/dev/null | wc -c)
+    prefix=${prefix//[!0-9]/}
+    nul=$(head -c 8000 "$abs" 2>/dev/null | LC_ALL=C tr -cd '\000' | wc -c)
+    ctl=$(head -c 8000 "$abs" 2>/dev/null | LC_ALL=C tr -cd '\000-\006\016-\037\177' | wc -c)
+    nul=${nul//[!0-9]/}
+    ctl=${ctl//[!0-9]/}
+    if [[ -z $prefix || -z $nul || -z $ctl ]]; then
+      echo "is an untracked file $PROG cannot read, so it cannot tell what Hunk shows"
+      return 2
+    fi
+    if ((nul > 0 || ctl * 10 >= prefix * 3)); then
+      echo "is an untracked binary file, which Hunk skips"
+      return 1
+    fi
+  fi
+  patch=$(git -C "$root" diff --no-index --no-color --no-ext-diff --text --src-prefix=a/ --dst-prefix=b/ -- /dev/null "$path" 2>/dev/null | patch_hunk_ranges)
+  if [[ -z $patch ]]; then
+    echo "is an untracked file whose hunk $PROG could not read from git, so it cannot tell what Hunk shows"
+    return 2
+  fi
+  printf '%s\n' "$patch"
+}
+
+# Say, on stderr, which annotations the review-plan extension will skip: a
+# ranged annotation that overlaps no hunk of the diff against <base> is dropped
+# when the plan loads, and Hunk shows only a count. One line per annotation,
+# naming the file path and the annotation's index in that file's list (counted
+# from 0, as validatePlan counts), so the plan can be fixed and written again.
+# Never fails the write: it is a warning. Every ranged annotation gets a verdict
+# or a line saying why it got none. A file the diff has no hunk for is not
+# skipped: an untracked file gets the hunk Hunk builds for it (untracked_hunks
+# has the rules; when they cannot be matched the annotation is reported as not
+# confirmed), and a pure rename, a mode change, a binary file or a file outside
+# the diff lands in no hunk. Only the first entry for a path counts, as in
+# validatePlan.
+# The hunk ranges come from `git diff` with the context git is configured for
+# (diff.context), the way patchHunkRanges reads Hunk's patch, so they are an
+# approximation of Hunk's. The prefixes are pinned so diff.mnemonicPrefix or
+# diff.noprefix cannot change the paths it reads, and a quoted path in a
+# header is decoded.
+annotation_range_warnings() {
+  local root="$1" plan="$2" base="$3" ranged
+  ranged=$(jq -r '
+    [.groups[]? | .files[]? | select(type == "object" and (.path | type) == "string")]
+    | reduce .[] as $f ({seen: {}, out: []};
+        if .seen[$f.path] then . else .seen[$f.path] = true | .out += [$f] end)
+    | .out[] | .path as $p
+    | (.annotations | if type == "array" then . else [] end) | to_entries[]
+    | select((.value | type) == "object")
+    | select(((.value.oldRange | type) == "array") or ((.value.newRange | type) == "array"))
+    | select(($p | test("[\u0000-\u001f]")) | not)
+    | [$p, (.key | tostring),
+       ((.value.oldRange | if type == "array" then map(tostring) | join(",") else "" end)),
+       ((.value.newRange | if type == "array" then map(tostring) | join(",") else "" end))]
+    | join("\u001f")
+  ' "$plan" 2>/dev/null) || return 0
+  # A path with a control character cannot be told apart in this line format.
+  jq -r '
+    [.groups[]? | .files[]? | select(type == "object" and (.path | type) == "string")]
+    | reduce .[] as $f ({seen: {}, out: []};
+        if .seen[$f.path] then . else .seen[$f.path] = true | .out += [$f] end)
+    | .out[] | select(.path | test("[\u0000-\u001f]"))
+    | select([.annotations | if type == "array" then .[] else empty end
+              | select(type == "object" and (((.oldRange | type) == "array") or ((.newRange | type) == "array")))] | length > 0)
+    | "annotation ranges on file \(.path | tojson) not checked: its path has a control character"
+  ' "$plan" 2>/dev/null | while IFS= read -r warning; do echo "$PROG: $warning" >&2; done
+  [[ -n $ranged ]] || return 0
+
+  if [[ -z $base ]]; then
+    echo "$PROG: annotation ranges not checked against the diff; pass --base <merge-base> to check them" >&2
+    return 0
+  fi
+  if [[ $base == -* ]] || ! git -C "$root" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
+    echo "$PROG: annotation ranges not checked: '$base' is not a commit" >&2
+    return 0
+  fi
+
+  local hunks changed untracked
+  hunks=$(git -C "$root" -c core.quotepath=off diff -M --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$base" 2>/dev/null |
+    patch_hunk_ranges) || return 0
+  # NUL-separated, so no path is quoted: every file the diff changes, and every
+  # untracked file, one per line.
+  changed=$(git -C "$root" diff -M --name-only -z --no-ext-diff "$base" 2>/dev/null | tr '\0' '\n')
+  untracked=$(git -C "$root" ls-files -z --others --exclude-standard 2>/dev/null | tr '\0' '\n')
+
+  local path index oldr newr verdict why uhunks urc
+  # Unit separator, not a tab: tab is whitespace to `read`, which would fold an
+  # empty oldr or newr into its neighbour.
+  while IFS=$'\037' read -r path index oldr newr; do
+    [[ -n $path ]] || continue
+    verdict=$(range_verdict "$hunks" "$path" "$oldr" "$newr")
+    why=""
+    if [[ $verdict == unknown ]]; then
+      if grep -Fxq -- "$path" <<<"$untracked"; then
+        # Hunk builds an untracked file's patch itself; untracked_hunks applies
+        # its rules (rc 1: no hunk, rc 2: cannot be told).
+        uhunks=$(untracked_hunks "$root" "$path") && urc=0 || urc=$?
+        if ((urc == 2)); then
+          verdict=unconfirmed
+          why="$uhunks"
+        elif ((urc == 1)); then
+          verdict=outside
+          why="$uhunks"
+        else
+          verdict=$(range_verdict "$uhunks" "$path" "$oldr" "$newr")
+          if [[ $verdict == unknown ]]; then
+            verdict=unconfirmed
+            why="is an untracked file whose hunk $PROG could not match to its path, so it cannot tell what Hunk shows"
+          elif [[ $verdict == outside ]]; then
+            why="lies outside the untracked file, whose only hunk is its new lines $(awk -F'\t' '$2 == "new" { print $3 " to " $4; exit }' <<<"$uhunks")"
+          fi
+        fi
+      elif grep -Fxq -- "$path" <<<"$changed"; then
+        verdict=outside
+        why="lands in no hunk: the diff against $base changes this file without one (a pure rename, a mode change or a binary file)"
+      else
+        verdict=outside
+        why="lands in no hunk: this file is not in the diff against $base"
+      fi
+    else
+      why="lies outside every hunk of the diff against $base"
+    fi
+    if [[ $verdict == outside ]]; then
+      echo "$PROG: annotation $index on file \"$path\" $why; Hunk skips it. Take its range from the patch's @@ headers, fix the plan, and write it again" >&2
+    elif [[ $verdict == unconfirmed ]]; then
+      echo "$PROG: annotation $index on file \"$path\" not confirmed: the file $why" >&2
+    fi
+  done <<<"$ranged"
+}
+
+# range_verdict <hunk lines> <path> <oldRange> <newRange>: "ok" when a range
+# overlaps a hunk on the side it names, "outside" when the path has hunks but
+# none overlaps, "unknown" when the path has no hunk at all. A range is "s,e".
+range_verdict() {
+  local oldr="$3" newr="$4"
+  # The path goes in through the environment: awk -v would turn a backslash in
+  # a file name into an escape.
+  printf '%s\n' "$1" | RANGE_PATH="$2" awk -F'\t' -v os="${oldr%%,*}" -v oe="${oldr##*,}" -v ns="${newr%%,*}" -v ne="${newr##*,}" '
+    ($1 "") == (ENVIRON["RANGE_PATH"] "") {
+      seen = 1
+      if ($2 == "old" && os != "" && os + 0 <= $4 + 0 && $3 + 0 <= oe + 0) hit = 1
+      if ($2 == "new" && ns != "" && ns + 0 <= $4 + 0 && $3 + 0 <= ne + 0) hit = 1
+    }
+    END { print (!seen ? "unknown" : hit ? "ok" : "outside") }
+  '
+}
+
 cmd_write() {
   local root target dir tmp
   root=$(repo_root)
@@ -293,6 +555,17 @@ cmd_write() {
   else
     target=$(state_plan_path "$root")
   fi
+
+  local base="" wargs=("$@") wi
+  for ((wi = 0; wi < ${#wargs[@]}; wi++)); do
+    if [[ ${wargs[wi]} == "--base" ]]; then
+      base="${wargs[wi + 1]:-}"
+      [[ -n $base ]] || die "--base requires a commit or ref"
+    elif [[ ${wargs[wi]} == --base=* ]]; then
+      base="${wargs[wi]#--base=}"
+      [[ -n $base ]] || die "--base requires a commit or ref"
+    fi
+  done
 
   command -v jq >/dev/null 2>&1 || die "jq is required to validate the plan before writing"
 
@@ -342,6 +615,8 @@ cmd_write() {
   while IFS= read -r warning; do
     if [[ -n $warning ]]; then echo "$PROG: $warning" >&2; fi
   done < <(jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null; jq -r "$DANGER_WARNINGS_JQ" "$target" 2>/dev/null)
+
+  annotation_range_warnings "$root" "$target" "$base"
 
   # Never delete as a side effect of a write -- just say when the drawer is
   # full. Removal stays an explicit `gc`.
@@ -1946,7 +2221,7 @@ function flush(   n, parts, i, w, nw, j, cnt, head) {
       cnt++
       if (cnt <= 8) head = head (head == "" ? "" : " ") w[j]
     }
-    if (cnt > max) printf "%s: long sentence (%d words) in %s: \"%s ...\"\n", prog, cnt, name, shown(head)
+    if (cnt > max) printf "%s: long sentence (%d words) in %s: \"%s ...\"\n", prog, cnt, ENVIRON["PROSE_NAME"], shown(head)
   }
   block = ""
 }
@@ -2001,7 +2276,7 @@ prose_warnings() {
       awk -v prog="$PROG" -v max_terms="$GLOSSARY_MAX_TERMS" \
         -v max_words="$GLOSSARY_MAX_WORDS" "$CODEWORD_AWK$GLOSSARY_AWK" "$f" >&2
     else
-      awk -v prog="$PROG" -v max="$SENTENCE_MAX_WORDS" -v name="$(basename "$f")" \
+      PROSE_NAME="$(basename "$f")" awk -v prog="$PROG" -v max="$SENTENCE_MAX_WORDS" \
         "$CODEWORD_AWK$PROSE_AWK" "$f" >&2
     fi
   done

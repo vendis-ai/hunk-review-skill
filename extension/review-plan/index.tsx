@@ -783,6 +783,7 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
     }
 
     let orphanedAnnotations = 0;
+    const orphanedWhere: string[] = [];
     const outFiles: ExtensionDiffFile[] = ordered.visibleFiles.map((file) => {
       if (!config.injectNotes) return { ...file };
 
@@ -792,8 +793,9 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
       let mappedAnnotations: AgentAnnotation[] = [];
       if (planAnnotations && planAnnotations.length > 0) {
         const ranges = patchHunkRanges(file.patch);
-        const { kept, droppedCount } = filterAnnotationsInHunks(planAnnotations, ranges);
+        const { kept, droppedCount, droppedIndexes } = filterAnnotationsInHunks(planAnnotations, ranges);
         orphanedAnnotations += droppedCount;
+        for (const index of droppedIndexes) orphanedWhere.push(`${file.path} #${index}`);
         // Anchor before mapping: a note with no range cannot be placed on a
         // file view's row, and one unplaceable note keeps the whole file on
         // raw diff -- which would make any file carrying a file-scoped note
@@ -827,7 +829,9 @@ export default function reviewPlan(hunk: HunkExtensionAPI): void {
       ctx.notify(
         `review-plan: ${orphanedAnnotations} annotation${
           orphanedAnnotations === 1 ? "" : "s"
-        } skipped, outside any hunk`,
+        } skipped, outside any hunk (${orphanedWhere.slice(0, 3).join(", ")}${
+          orphanedWhere.length > 3 ? `, and ${orphanedWhere.length - 3} more` : ""
+        })`,
         "warning"
       );
     }

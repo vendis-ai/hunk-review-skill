@@ -676,6 +676,23 @@ describe("filterAnnotationsInHunks", () => {
     expect(result.kept.map((a) => a.summary)).toEqual(["keep-ranged", "keep-file-level"]);
     expect(result.droppedCount).toBe(1);
   });
+
+  test("names each dropped annotation by its position in the input list", () => {
+    const annotations: PlanAnnotation[] = [
+      { summary: "drop-first", newRange: [200, 201] },
+      { summary: "keep", newRange: [12, 14] },
+      { summary: "file-level" },
+      { summary: "drop-last", oldRange: [300, 301] },
+    ];
+    const result = filterAnnotationsInHunks(annotations, { old: [], new: [[10, 20]] });
+    expect(result.droppedIndexes).toEqual([0, 3]);
+    expect(result.droppedIndexes.length).toBe(result.droppedCount);
+  });
+
+  test("lists no index when nothing is dropped", () => {
+    const result = filterAnnotationsInHunks([{ summary: "x", newRange: [12, 14] }], { old: [], new: [[10, 20]] });
+    expect(result.droppedIndexes).toEqual([]);
+  });
 });
 
 describe("windowRows", () => {

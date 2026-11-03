@@ -420,6 +420,202 @@ assert_eq "$(door_write '"door":"two-way","blastRadius":{"scope":"tenant","note"
 (cd "$DOORS" && run_plan clear --yes >/dev/null 2>&1)
 
 echo
+echo "hunk-plan write: annotation ranges"
+
+# A repo of its own: a 40-line file with line 20 changed, so its one hunk
+# covers lines 17-23 on both sides, and a second file that is only untracked.
+RANGES="$TMP/ranges"
+mkdir -p "$RANGES"
+git -C "$RANGES" init -q .
+seq 1 40 >"$RANGES/a.txt"
+seq 1 40 >"$RANGES/q\"x.txt" # a path git quotes in its patch headers
+seq 1 10 >"$RANGES/r.txt"
+printf '\000\001a' >"$RANGES/bin.dat"
+git -C "$RANGES" add -A
+git -C "$RANGES" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m base
+RBASE=$(git -C "$RANGES" rev-parse HEAD)
+sed -i.bak 's/^20$/twenty/' "$RANGES/a.txt" && rm -f "$RANGES/a.txt.bak"
+sed -i.bak 's/^20$/twenty/' "$RANGES/q\"x.txt" && rm -f "$RANGES/q\"x.txt.bak"
+git -C "$RANGES" mv r.txt r2.txt # a pure rename: no hunk
+printf '\000\002b' >"$RANGES/bin.dat"
+printf 'one\ntwo\nthree\n' >"$RANGES/fresh.txt" # untracked: one added hunk, lines 1-3
+# plan_write <write args> <files json> -- writes a plan of one group with those
+# file entries; prints only stderr.
+plan_write() {
+  (cd "$RANGES" && printf '{"version":1,"groups":[{"title":"Core","files":%s}]}' "$2" |
+    run_plan write $1 >/dev/null 2>"$TMP/range.err")
+  cat "$TMP/range.err"
+}
+# range_write <write args> <annotations json> -- annotations on a.txt.
+range_write() {
+  plan_write "$1" "[{\"path\":\"a.txt\",\"annotations\":$2}]"
+}
+
+assert_eq "$(range_write "--base $RBASE" '[{"summary":"in","newRange":[19,21]},{"summary":"file-level"},{"summary":"old side","oldRange":[20,20]}]')" "" \
+  "ranges inside a hunk, and a file-level note, raise no warning"
+ERR=$(range_write "--base $RBASE" '[{"summary":"in","newRange":[19,21]},{"summary":"out","newRange":[35,36]}]')
+assert_eq "$ERR" "hunk-plan: annotation 1 on file \"a.txt\" lies outside every hunk of the diff against $RBASE; Hunk skips it. Take its range from the patch's @@ headers, fix the plan, and write it again" \
+  "names the file and the index of an annotation outside every hunk, and nothing else"
+(cd "$RANGES" && run_plan show | jq -e '.groups[0].files[0].annotations | length == 2' >/dev/null) &&
+  ok "...and still writes the plan with both annotations" || no "...and still writes the plan with both annotations"
+ERR=$(range_write "--base $RBASE" '[{"summary":"a","newRange":[1,2]},{"summary":"b","oldRange":[1,2],"newRange":[22,22]},{"summary":"c","oldRange":[38,39]}]')
+assert_in 'annotation 0 on file "a.txt"' <(printf '%s\n' "$ERR") "reports the first of several"
+assert_in 'annotation 2 on file "a.txt"' <(printf '%s\n' "$ERR") "reports the last of several"
+assert_eq "$(printf '%s\n' "$ERR" | grep -c 'annotation 1 ')" "0" "an annotation with one side inside a hunk is fine"
+assert_in 'annotation ranges not checked against the diff; pass --base' <(range_write "" '[{"summary":"x","newRange":[35,36]}]') \
+  "without --base, says the ranges were not checked"
+assert_in "not checked: 'no-such-ref' is not a commit" <(range_write "--base no-such-ref" '[{"summary":"x","newRange":[35,36]}]') \
+  "with a base that is no commit, says so..."
+(cd "$RANGES" && run_plan show | jq -e '.groups[0].files[0].annotations | length == 1' >/dev/null) &&
+  ok "...and still writes the plan" || no "...and still writes the plan"
+assert_eq "$(range_write "--base $RBASE" '[{"summary":"x"}]')" "" "a plan with no ranged annotation raises nothing"
+(cd "$RANGES" && printf '{"version":1,"groups":[]}' | run_plan write --base >/dev/null 2>&1)
+assert_eq "$?" "1" "--base with no value is an error"
+assert_in 'annotation 0 on file "a.txt" lies outside every hunk' <(range_write "--base=$RBASE" '[{"summary":"x","newRange":[35,36]}]') \
+  "--base=<ref> works like --base <ref>"
+
+# Files the diff has no hunk for still get a verdict.
+ERR=$(plan_write "--base $RBASE" '[{"path":"fresh.txt","annotations":[{"summary":"in","newRange":[2,3]},{"summary":"past the end","newRange":[500,501]},{"summary":"old side","oldRange":[1,2]}]}]')
+assert_eq "$(printf '%s\n' "$ERR" | grep -c 'annotation 0 ')" "0" "an untracked file: a range inside its lines is fine"
+assert_in 'annotation 1 on file "fresh.txt" lies outside the untracked file, whose only hunk is its new lines 1 to 3' <(printf '%s\n' "$ERR") \
+  "an untracked file: a range past its last line warns"
+assert_in 'annotation 2 on file "fresh.txt" lies outside the untracked file' <(printf '%s\n' "$ERR") \
+  "an untracked file: an old-side range warns"
+ERR=$(plan_write "--base $RBASE" '[{"path":"r2.txt","annotations":[{"summary":"x","newRange":[1,2]}]},{"path":"bin.dat","annotations":[{"summary":"y","newRange":[1,1]}]}]')
+assert_in 'annotation 0 on file "r2.txt" lands in no hunk' <(printf '%s\n' "$ERR") "a pure rename: warns that the annotation lands in no hunk"
+assert_in 'annotation 0 on file "bin.dat" lands in no hunk' <(printf '%s\n' "$ERR") "a binary file: warns that the annotation lands in no hunk"
+assert_in 'annotation 0 on file "nowhere.txt" lands in no hunk: this file is not in the diff' \
+  <(plan_write "--base $RBASE" '[{"path":"nowhere.txt","annotations":[{"summary":"x","newRange":[1,1]}]}]') "a file outside the diff warns too"
+
+# A non-ASCII file name, tracked and changed or untracked, in each locale the
+# system has: git quotes it in octal for an untracked file, and the decoding
+# must give back its bytes whatever the locale.
+UNI="$TMP/uni"
+mkdir -p "$UNI"
+git -C "$UNI" init -q .
+seq 1 40 >"$UNI/café.txt"
+git -C "$UNI" add -A
+git -C "$UNI" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m base
+UBASE=$(git -C "$UNI" rev-parse HEAD)
+sed -i.bak 's/^20$/twenty/' "$UNI/café.txt" && rm -f "$UNI/café.txt.bak"
+seq 1 3 >"$UNI/café-new.txt"
+# uni_write <locale> <path> <newRange> -- stderr of a write with one annotation.
+uni_write() {
+  (cd "$UNI" && export LC_ALL="$1" &&
+    printf '{"version":1,"groups":[{"title":"Core","files":[{"path":"%s","annotations":[{"summary":"x","newRange":%s}]}]}]}' "$2" "$3" |
+    run_plan write --base "$UBASE" 2>&1 >/dev/null)
+}
+for loc in C C.UTF-8 en_US.UTF-8; do
+  if [[ $loc == *UTF-8 && $(LC_ALL=$loc locale charmap 2>/dev/null) != UTF-8 ]]; then
+    echo "  skip non-ASCII names under LC_ALL=$loc (locale not installed)"
+    continue
+  fi
+  assert_in 'annotation 0 on file "café.txt" lies outside every hunk' <(uni_write "$loc" 'café.txt' '[35,36]') \
+    "LC_ALL=$loc: a tracked file with a non-ASCII name: a range outside its hunk warns"
+  assert_eq "$(uni_write "$loc" 'café.txt' '[20,20]')" "" "LC_ALL=$loc: ...and a range inside it is fine"
+  assert_in 'annotation 0 on file "café-new.txt" lies outside the untracked file, whose only hunk is its new lines 1 to 3' \
+    <(uni_write "$loc" 'café-new.txt' '[99,99]') "LC_ALL=$loc: an untracked file with a non-ASCII name: a range past its end warns"
+  assert_eq "$(uni_write "$loc" 'café-new.txt' '[2,2]')" "" "LC_ALL=$loc: ...and a range inside it is fine"
+done
+(cd "$UNI" && run_plan clear --yes >/dev/null 2>&1)
+
+# An untracked file is judged by the hunk Hunk builds for it (Hunk's
+# src/core/vcs/untracked.ts), not by what its bytes happen to hold.
+# one_file_write <path> <newRange> -- one annotation on <path>; prints stderr.
+one_file_write() {
+  plan_write "--base $RBASE" "[{\"path\":$(jq -Rn --arg p "$1" '$p'),\"annotations\":[{\"summary\":\"x\",\"newRange\":$2}]}]"
+}
+# Paths that look like numbers are compared as text: "01" is not "1".
+NUMS="$TMP/nums"
+mkdir -p "$NUMS"
+git -C "$NUMS" init -q .
+seq 1 40 >"$NUMS/1"
+seq 1 40 >"$NUMS/01"
+git -C "$NUMS" add -A
+git -C "$NUMS" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m base
+NBASE=$(git -C "$NUMS" rev-parse HEAD)
+sed -i.bak 's/^5$/five/' "$NUMS/1" && rm -f "$NUMS/1.bak"
+sed -i.bak 's/^30$/thirty/' "$NUMS/01" && rm -f "$NUMS/01.bak"
+num_write() {
+  (cd "$NUMS" && printf '{"version":1,"groups":[{"title":"Core","files":[{"path":"01","annotations":[{"summary":"x","newRange":%s}]}]}]}' "$1" |
+    run_plan write --base "$NBASE" 2>&1 >/dev/null)
+}
+assert_in 'annotation 0 on file "01" lies outside every hunk' <(num_write '[5,5]') \
+  "a file named 01 is not judged by the hunks of a file named 1"
+assert_eq "$(num_write '[30,30]')" "" "...and its own hunk is found"
+(cd "$NUMS" && run_plan clear --yes >/dev/null 2>&1)
+
+seq 1 3 >"$RANGES/back\\slash.txt" # a backslash in the file name
+assert_eq "$(one_file_write 'back\slash.txt' '[2,3]')" "" \
+  "an untracked file with a backslash in its name: a range inside it is found"
+assert_in 'annotation 0 on file "back\slash.txt" lies outside the untracked file, whose only hunk is its new lines 1 to 3' \
+  <(one_file_write 'back\slash.txt' '[9,9]') "...and a range past its end warns"
+seq 1 100 >"$RANGES/long.txt"
+ln -s long.txt "$RANGES/lnk"
+ln -s no-such-target "$RANGES/dang"
+mkdir "$RANGES/somedir"
+ln -s somedir "$RANGES/dirlnk"
+assert_eq "$(one_file_write lnk '[1,1]')" "" "an untracked symlink is one added line: [1,1] is fine"
+assert_in 'annotation 0 on file "lnk" lies outside the untracked file, whose only hunk is its new lines 1 to 1' \
+  <(one_file_write lnk '[50,50]') "...and a range in its target's later lines warns"
+assert_eq "$(one_file_write dang '[1,1]')" "" "a dangling untracked symlink is one added line too"
+assert_in 'annotation 0 on file "dang" lies outside the untracked file, whose only hunk is its new lines 1 to 1' \
+  <(one_file_write dang '[2,2]') "...and a range past that line warns"
+assert_in 'annotation 0 on file "dirlnk" is an untracked symlink to a directory, which Hunk leaves out' \
+  <(one_file_write dirlnk '[1,1]') "a symlink to a directory has no hunk"
+yes '' | head -3 >"$RANGES/newlines.txt"
+assert_eq "$(one_file_write newlines.txt '[2,2]')" "" "a file of only newlines is a three-line hunk"
+assert_in 'whose only hunk is its new lines 1 to 3' <(one_file_write newlines.txt '[4,4]') "...and a range past it warns"
+: >"$RANGES/empty.txt"
+assert_in 'annotation 0 on file "empty.txt" is an empty untracked file, which has no hunk' \
+  <(one_file_write empty.txt '[1,1]') "an empty untracked file has no hunk"
+# Hunk skips a file over 1,000,000 bytes, or with over 20,000 lines in its first 256 KiB.
+head -c 1000000 /dev/zero | tr '\0' a >"$RANGES/edge.txt"
+head -c 1000001 /dev/zero | tr '\0' a >"$RANGES/toobig.txt"
+seq 1 20000 >"$RANGES/lines-ok.txt"
+seq 1 20001 >"$RANGES/lines-over.txt"
+assert_eq "$(one_file_write edge.txt '[1,1]')" "" "an untracked file of exactly 1,000,000 bytes is shown"
+assert_in 'annotation 0 on file "toobig.txt" is an untracked file over 1,000,000 bytes, which Hunk skips as too large' \
+  <(one_file_write toobig.txt '[1,1]') "an untracked file one byte over the limit is skipped"
+assert_eq "$(one_file_write lines-ok.txt '[20000,20000]')" "" "an untracked file of 20,000 lines is shown"
+assert_in 'annotation 0 on file "lines-over.txt" is an untracked file with more than 20,000 lines, which Hunk skips as too large' \
+  <(one_file_write lines-over.txt '[1,1]') "an untracked file of 20,001 lines is skipped"
+# Hunk's binary test: a NUL, or 30% control bytes, in the first 8,000 bytes.
+head -c 3 /dev/zero >"$RANGES/nul.dat"
+printf 'a\001b' >"$RANGES/ctl30.dat"
+printf 'abcdefg\001\n' >"$RANGES/ctl10.txt"
+assert_in 'annotation 0 on file "nul.dat" is an untracked binary file, which Hunk skips' \
+  <(one_file_write nul.dat '[1,1]') "an untracked file with a NUL is binary"
+assert_in 'annotation 0 on file "ctl30.dat" is an untracked binary file' \
+  <(one_file_write ctl30.dat '[1,1]') "an untracked file of 33% control bytes is binary"
+assert_eq "$(one_file_write ctl10.txt '[1,1]')" "" "an untracked file of 11% control bytes is text"
+# A file the check cannot read is reported as not confirmed, never passed or called hunkless.
+if [[ $(id -u) != 0 ]]; then
+  seq 1 3 >"$RANGES/locked.txt"
+  chmod 000 "$RANGES/locked.txt"
+  assert_in 'annotation 0 on file "locked.txt" not confirmed: the file is an untracked file hunk-plan cannot read, so it cannot tell what Hunk shows' \
+    <(one_file_write locked.txt '[1,1]') "an unreadable untracked file is reported as not confirmed"
+  chmod 644 "$RANGES/locked.txt"
+fi
+
+# A quoted path is decoded; a path git cannot show in a header is never silent.
+ERR=$(plan_write "--base $RBASE" '[{"path":"q\"x.txt","annotations":[{"summary":"in","newRange":[20,20]},{"summary":"out","newRange":[35,36]}]}]')
+assert_eq "$ERR" "hunk-plan: annotation 1 on file \"q\"x.txt\" lies outside every hunk of the diff against $RBASE; Hunk skips it. Take its range from the patch's @@ headers, fix the plan, and write it again" \
+  "a path with a quote: checked, and only the range outside its hunk warns"
+assert_in 'annotation ranges on file "tab\there.txt" not checked: its path has a control character' \
+  <(plan_write "--base $RBASE" '[{"path":"tab\there.txt","annotations":[{"summary":"x","newRange":[1,1]}]}]') \
+  "a path with a control character says its ranges were not checked"
+
+# Only a path's first entry counts, as when the plan loads.
+ERR=$(printf '{"version":1,"groups":[{"title":"One","files":[{"path":"a.txt","annotations":[{"summary":"in","newRange":[20,20]}]}]},{"title":"Two","files":[{"path":"a.txt","annotations":[{"summary":"dropped","newRange":[35,36]}]}]}]}' |
+  (cd "$RANGES" && run_plan write --base "$RBASE" 2>&1 >/dev/null))
+assert_eq "$ERR" "" "a duplicate path's later entry, which Hunk discards, raises no warning"
+ERR=$(printf '{"version":1,"groups":[{"title":"One","files":[{"path":"a.txt","annotations":[{"summary":"out","newRange":[35,36]}]}]},{"title":"Two","files":[{"path":"a.txt","annotations":[{"summary":"in","newRange":[20,20]}]}]}]}' |
+  (cd "$RANGES" && run_plan write --base "$RBASE" 2>&1 >/dev/null))
+assert_in 'annotation 0 on file "a.txt"' <(printf '%s\n' "$ERR") "...while the first entry is the one checked"
+(cd "$RANGES" && run_plan clear --yes >/dev/null 2>&1)
+
+echo
 echo "hunk-plan danger"
 
 # A repo of its own, with a stand-in for Vendis's bin/merge-danger that answers

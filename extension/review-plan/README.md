@@ -121,7 +121,11 @@ file-scoped note anyway and is what keeps the file collapsible (see
 [Collapsing a file's diff](#collapsing-a-files-diff)); an
 annotation with a range that does not land inside any hunk of that file's
 current patch is dropped rather than injected pointing at nothing --
-`inject_notes` reports how many were dropped this way via a notification.
+`inject_notes` reports how many were dropped this way via a notification that
+names the first three by file path and annotation index (from 0), then "and N
+more". The writing
+agent hears of them earlier: `hunk-plan write --base <merge-base>` warns on
+stderr about each such annotation, with its file path and index.
 `rationale`, `tags`, and `confidence` are optional context alongside the
 required `summary`; an invalid `confidence` (outside `low`/`medium`/`high`)
 or a non-array `tags` is silently dropped rather than failing plan

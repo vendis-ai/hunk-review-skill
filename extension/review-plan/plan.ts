@@ -623,6 +623,8 @@ function rangesOverlap(a: [number, number], b: [number, number]): boolean {
 export interface AnnotationFilterResult {
   kept: PlanAnnotation[];
   droppedCount: number;
+  /** Positions, in the input list and from 0, of the annotations dropped. */
+  droppedIndexes: number[];
 }
 
 /**
@@ -640,7 +642,8 @@ export function filterAnnotationsInHunks(
 ): AnnotationFilterResult {
   const kept: PlanAnnotation[] = [];
   let droppedCount = 0;
-  for (const annotation of annotations) {
+  const droppedIndexes: number[] = [];
+  for (const [index, annotation] of annotations.entries()) {
     if (!annotation.oldRange && !annotation.newRange) {
       kept.push(annotation);
       continue;
@@ -651,9 +654,10 @@ export function filterAnnotationsInHunks(
       kept.push(annotation);
     } else {
       droppedCount += 1;
+      droppedIndexes.push(index);
     }
   }
-  return { kept, droppedCount };
+  return { kept, droppedCount, droppedIndexes };
 }
 
 /**
