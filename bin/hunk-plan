@@ -86,9 +86,9 @@ Commands:
                         Existing files are never overwritten; they are this
                         plan's, since write moves an earlier plan's aside.
   render [--in-repo] [-o <path>]
-                        Render the plan plus its report directory into a
-                        self-contained HTML page at <plan>.html (or -o), and
-                        copy the marked/mermaid assets alongside it. The frame,
+                        Render the plan plus its report directory into an
+                        HTML page at <plan>.html (or -o), and copy the
+                        marked/mermaid assets it loads alongside it. The frame,
                         nav, table of contents, section ids, verdict badges and
                         link rules are all derived here; only the body prose
                         comes from the report directory. A plan "mergeDanger"

@@ -105,7 +105,7 @@ It reports the changeset size, groups the files by topic, orders the groups by w
 likely to get wrong, annotates only the hunks that carry a decision, and hands you back two things:
 a command to open the plan in Hunk, and a path to the HTML writeup.
 
-The writeup is a self-contained local file. It opens with an overview of what the branch does
+The writeup is an HTML page next to the plan. It opens with an overview of what the branch does
 and why, written so a CTO could read it without the code. A TL;DR for the reviewer follows: the
 biggest risk and where to look first. When the review runs in the session where the change was
 asked for, a decisions block comes next. It walks through how the change runs, step by step,

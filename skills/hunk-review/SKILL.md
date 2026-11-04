@@ -211,6 +211,12 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
    you do not list at all sink to the bottom automatically — the cheapest deprioritisation
    available; use it deliberately rather than listing everything.
 
+   Keep tests that only follow the code out of the feature groups. When there are any, list them
+   in one group of their own, titled "Routine tests", with the highest importance of any group
+   (6 or more, so it renders closed as Skim). A test file stays in its feature group only when
+   it holds something the reviewer should look at: an edge case, a tricky setup, a changed
+   expectation, or a removed or weakened assertion. Then annotate those lines and say why.
+
    Every group also gets a one-sentence `summary` — required, not optional. It says what the
    topic *is*, in plain terms a reader can act on before opening the section: not the risk (the
    badge covers that) and not the whole branch (the overview covers that). Keep it to one topic
@@ -573,9 +579,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
        hunk-plan render
 
    It writes the HTML next to the plan, copies its own Mermaid and Markdown assets alongside,
-   and prints the path. Keep it a local file: it is a review of unmerged code, and it loads
-   those assets by relative path, so publishing it anywhere would both leak the diff and break
-   every diagram on the page.
+   and prints the path. The page renders its prose and diagrams with scripts, and it loads
+   those two assets from its own folder.
 
    It also checks the prose, and reports on stderr every sentence over 25 words, a glossary over
    12 terms, and a glossary meaning over 15 words. Rewrite each one it names and render again.
@@ -720,7 +725,8 @@ off. Alongside the plan, this produces a second artifact: a per-topic HTML write
 ## Failure modes
 
 - `hunk: command not found` — Hunk is installed via mise (`aqua:modem-dev/hunk`). Say so rather
-  than guessing at an install path.
+  than guessing at an install path. Never install Hunk yourself: the install changes the user's
+  global tool setup and picks a version for them.
 - `hunk-plan: command not found` — `hunk-plan` ships alongside this skill and is symlinked onto
   PATH by the skill repo's `install.sh`. Either that installer has not been run or `~/.local/bin`
   is not on PATH. Say which you suspect; then fall back to writing the sidecar JSON directly, as
