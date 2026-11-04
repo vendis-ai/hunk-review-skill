@@ -53,6 +53,9 @@ assert_not_in() {
 assert_eq() {
   if [[ "$1" == "$2" ]]; then ok "$3"; else no "$3 (want '$2', got '$1')"; fi
 }
+# esc 202E prints the six characters of the escape hunk-plan writes for U+202E;
+# esc DB40 DC41 prints a surrogate pair.
+esc() { printf '\\u%s' "$@"; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -377,6 +380,12 @@ assert_in '<p class="decisions-none">Decisions and drift: not written. Only the 
   "$TMP/lint.html" "an empty _decisions.md says who can write it"
 assert_not_in '<div class="decisions">' "$TMP/lint.html" "...and renders no empty block"
 assert_not_in '_decisions.md' "$TMP/lint.err" "...and is not a warning: an empty file is the honest answer"
+# The warning quotes the sentence, so a hidden character in it (a tag
+# character, U+E0041) is written as a \u escape, never raw.
+printf '%s%s\n' "$(printf '\363\240\201\201')" "$LONG" >"$DIR/dev-tooling.why.md"
+run_plan render -o "$TMP/lint.html" >/dev/null 2>"$TMP/lint.err"
+assert_in "\"$(esc DB40 DC41)This sentence is written" "$TMP/lint.err" "a quoted sentence shows a hidden character as an escape"
+assert_not_in "$(printf '\363\240\201\201')" "$TMP/lint.err" "...and never prints it raw"
 for f in _overview.md _decisions.md _glossary.md dev-tooling.why.md dev-tooling.md; do cp "$TMP/keep.$f" "$DIR/$f"; done
 
 # The decisions alone are still front matter worth showing.
@@ -413,6 +422,17 @@ assert_eq "$ERR" 'hunk-plan: group "Migration" is one-way but ranked Skim (impor
   "warns about a one-way group ranked Skim"
 (cd "$DOORS" && run_plan show | jq -e '.groups[0].door == "one-way"' >/dev/null) &&
   ok "...and still writes the plan" || no "...and still writes the plan"
+# A title can carry a tag character (U+E0041), which a model reads and a
+# terminal does not show. The warning and `show` write it as a \u escape;
+# `show` still decodes to the title as written.
+TAG=$(printf '\363\240\201\201')
+(cd "$DOORS" && printf '{"version":1,"groups":[{"title":"Mig%sration","door":"one-way","importance":6,"files":[{"path":"m.rb"}]}]}' \
+  "$(esc DB40 DC41)" | run_plan write >/dev/null 2>"$TMP/door.err")
+assert_in "group \"Mig$(esc DB40 DC41)ration\" is one-way" "$TMP/door.err" "a warning writes a hidden character in a title as an escape"
+assert_not_in "$TAG" "$TMP/door.err" "...and never prints it raw"
+(cd "$DOORS" && run_plan show) >"$TMP/show.out"
+assert_not_in "$TAG" "$TMP/show.out" "show never prints it raw"
+assert_eq "$(jq -r '.groups[0].title' "$TMP/show.out")" "Mig${TAG}ration" "...and still decodes to the title as written"
 assert_eq "$(door_write '"door":"one-way","importance":5,')" "" "a one-way group at Review is fine"
 assert_in 'is one-way but ranked Skim (importance 50)' <(door_write '"door":"one-way",') \
   "a one-way group with no importance is at Skim (50)"

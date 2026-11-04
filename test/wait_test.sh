@@ -39,6 +39,9 @@ no() {
 assert_eq() {
   if [[ "$1" == "$2" ]]; then ok "$3"; else no "$3 (want '$2', got '$1')"; fi
 }
+# esc 202E prints the six characters of the escape hunk-plan writes for U+202E;
+# esc DB40 DC41 prints a surrogate pair.
+esc() { printf '\\u%s' "$@"; }
 assert_file() {
   if [[ -e $1 ]]; then ok "$2"; else no "$2 (missing: $1)"; fi
 }
@@ -99,7 +102,8 @@ json_id() {
   if [[ -n $id && $id != none ]]; then printf '"%s"' "$id"; else printf 'null'; fi
 }
 
-# write_marker <kind> [<planId>|none]: a hand-off as the extension writes it.
+# write_marker <kind> [<planId>|none] [<summary as JSON string text>]: a
+# hand-off as the extension writes it.
 write_marker() {
   mkdir -p "$LOOP"
   cat >"$LOOP/go.json" <<JSON
@@ -114,7 +118,7 @@ write_marker() {
   "createdAt": "2026-10-01T12:00:00.000Z",
   "notes": [
     { "id": "user:1-1", "source": "user", "file": "src/a.ts", "side": "new", "line": 3,
-      "summary": "why?", "resolution": "active", "new": true }
+      "summary": "${3:-why?}", "resolution": "active", "new": true }
   ]
 }
 JSON
@@ -195,6 +199,22 @@ assert_file "$LOOP/last.json" "and kept as last.json"
 
 run_wait --timeout 0
 assert_pending "a consumed marker is not delivered twice"
+
+# A note can carry characters a model reads and a terminal does not show:
+# here a bidi override (U+202E), a tag character (U+E0041) and an escape.
+# The answer writes them as \u escapes, so the JSON still decodes to the
+# same text, and leaves other non-ASCII (the u-umlaut) alone.
+write_marker go "" "fix$(esc 202E)it$(esc DB40 DC41) $(esc 00fc)ber $(esc 001b)[31m"
+run_wait --timeout 5
+assert_kind go "a note with invisible characters: kind go"
+LC_ALL=C grep -qF "$(printf '\342\200\256')" "$OUT" && no "no raw bidi override in the answer" ||
+  ok "no raw bidi override in the answer"
+LC_ALL=C grep -qF "$(printf '\363\240\201\201')" "$OUT" && no "no raw tag character in the answer" ||
+  ok "no raw tag character in the answer"
+grep -qF "fix$(esc 202E)it$(esc DB40 DC41)" "$OUT" && ok "both are written as escapes" ||
+  no "both are written as escapes ($(cat "$OUT"))"
+assert_eq "$(jq -r '.notes[0].summary' "$OUT")" "$(printf 'fix\342\200\256it\363\240\201\201 \303\274ber \033[31m')" \
+  "the JSON still decodes to the note as written"
 
 # The answer is printed first and archived after. If it cannot be printed, the
 # marker stays where it was, so the next wait offers the same answer.

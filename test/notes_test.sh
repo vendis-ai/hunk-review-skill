@@ -38,6 +38,9 @@ no() {
 assert_eq() {
   if [[ "$1" == "$2" ]]; then ok "$3"; else no "$3 (want '$2', got '$1')"; fi
 }
+# esc 202E prints the six characters of the escape hunk-plan writes for U+202E;
+# esc DB40 DC41 prints a surrogate pair.
+esc() { printf '\\u%s' "$@"; }
 assert_no_file() {
   if [[ -e $1 ]]; then no "$2 (still there: $1)"; else ok "$2"; fi
 }
@@ -164,6 +167,31 @@ jq -cn --arg w "$W1" --arg p "$PLAN_ID" --arg b "$(printf 'x%.0s' {1..300})" 'ra
 run_notes --json
 assert_eq "$RC" "0" "a journal past the argument limit: exit 0"
 assert_eq "$(jq -r '[.notes[] | select(.file == "src/big.ts")] | length' "$OUT")" "600" "and every note in it"
+
+echo
+echo "characters a person cannot see"
+
+# A bidi override (U+202E) in the path; it, a tag character (U+E0041) and an
+# escape in the body. Both outputs write them as \u escapes; other non-ASCII
+# (the u-umlaut) stays as it is.
+RLO=$(printf '\342\200\256')
+TAG=$(printf '\363\240\201\201')
+HIDDEN="fix${RLO}it${TAG} $(printf '\303\274')ber $(printf '\033')[31m"
+created "$W1" "$PLAN_ID" "user:hid-1" "src/hid${RLO}den.ts" 4 "$HIDDEN"
+run_notes
+LC_ALL=C grep -qF -e "$RLO" -e "$TAG" -e "$(printf '\033')" "$OUT" && no "text: nothing invisible is printed raw" ||
+  ok "text: nothing invisible is printed raw"
+grep -qF "src/hid$(esc 202E)den.ts:4 (new)  [user]" "$OUT" && ok "text: the path shows its bidi override" ||
+  no "text: the path shows its bidi override"
+grep -qF "  fix$(esc 202E)it$(esc DB40 DC41) $(printf '\303\274')ber $(esc 001B)[31m" "$OUT" && ok "text: the body shows every one, and keeps the umlaut" ||
+  no "text: the body shows every one, and keeps the umlaut ($(grep -F 'fix' "$OUT"))"
+run_notes --json
+LC_ALL=C grep -qF -e "$RLO" -e "$TAG" "$OUT" && no "--json: nothing invisible is printed raw" ||
+  ok "--json: nothing invisible is printed raw"
+assert_eq "$(jq -r '.notes[] | select(.id == "user:hid-1") | .summary' "$OUT")" "$HIDDEN" \
+  "--json still decodes to the note as written"
+assert_eq "$(jq -r '.notes[] | select(.id == "user:hid-1") | .file' "$OUT")" "src/hid${RLO}den.ts" \
+  "--json still decodes to the path as written"
 
 echo
 echo "cleanup"

@@ -41,6 +41,9 @@ no() {
 assert_eq() {
   if [[ "$1" == "$2" ]]; then ok "$3"; else no "$3 (want '$2', got '$1')"; fi
 }
+# esc 202E prints the six characters of the escape hunk-plan writes for U+202E;
+# esc DB40 DC41 prints a surrogate pair.
+esc() { printf '\\u%s' "$@"; }
 assert_match() {
   if grep -Eq -- "$2" "$1"; then ok "$3"; else no "$3 (no line matches /$2/ in: $(cat "$1"))"; fi
 }
@@ -384,6 +387,28 @@ run_list --json
 assert_eq "$RC" "0" "--json: exit 0"
 assert_eq "$(jq -r '[.reviews[] | select(.repo == "'"$R4"'") | .planFiles | length] | first' "$OUT")" "4000" \
   "with every row whole"
+
+echo
+echo "characters a person cannot see"
+
+# A branch name may carry a bidi override (U+202E). The table and --json write
+# it as a \u escape; --json still decodes to the name as written.
+RLO=$(printf '\342\200\256')
+R7="$TMP/repo-hidden"
+mkdir -p "$R7"
+cd "$R7" || exit 1
+git init -q .
+commit init
+git checkout -q -b "hid${RLO}den"
+printf '%s' "$PLAN_JSON" | run_plan write >/dev/null 2>&1
+run_list
+LC_ALL=C grep -qF "$RLO" "$OUT" && no "text: no raw bidi override" || ok "text: no raw bidi override"
+grep -qF "repo-hidden" "$OUT" && grep -qF "hid$(esc 202E)den" "$OUT" && ok "text: the branch shows its bidi override" ||
+  no "text: the branch shows its bidi override ($(cat "$OUT"))"
+run_list --json
+LC_ALL=C grep -qF "$RLO" "$OUT" && no "--json: no raw bidi override" || ok "--json: no raw bidi override"
+assert_eq "$(jq -r '.reviews[] | select(.repo == "'"$R7"'") | .branch' "$OUT")" "hid${RLO}den" \
+  "--json still decodes to the branch as written"
 
 echo
 echo "$PASS passed, $FAIL failed"

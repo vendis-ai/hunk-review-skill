@@ -290,6 +290,59 @@ has_flag() {
   return 1
 }
 
+# ── characters a person cannot see ───────────────────────────────────────────
+#
+# Text from outside this script -- the reviewer's notes, agent replies, a
+# plan's titles and prose, paths and branch names from the branch under
+# review -- reaches a terminal and an agent alike. Some characters show
+# nothing on a terminal, yet a model reads them: tag characters can spell out
+# a whole hidden instruction, and bidi controls make text read in another
+# order than it is stored. Controls can also drive the terminal itself. jq
+# escapes only C0 controls and DEL inside JSON strings; every other
+# character, and with -r everything, goes out as it is.
+#
+# So every command that prints such text sends it through `visible` last. It
+# writes each character of the set below as a \u escape, an astral one as its
+# UTF-16 surrogate pair. Inside a JSON string that is the standard escape, so
+# the JSON still decodes to the same text; in plain text it shows what is
+# there. Any other character, such as an umlaut or an emoji, stays as it is.
+# The set is emend's (apps/emend/src/cli/escape.ts), except tab and newline:
+# `visible` reads line by line, a list row splits on tabs, and jq already
+# escapes both inside JSON strings.
+#
+#   C0 and C1 controls, DEL            U+0000-U+001F, U+007F-U+009F
+#   combining grapheme joiner          U+034F
+#   Arabic letter mark                 U+061C
+#   Hangul fillers                     U+115F, U+1160, U+3164, U+FFA0
+#   zero-width characters, LRM, RLM    U+200B-U+200F
+#   line and paragraph separators,
+#     bidi embeddings and overrides    U+2028-U+202E
+#   word joiner, invisible operators,
+#     bidi isolates                    U+2060-U+206F
+#   variation selectors                U+FE00-U+FE0F, U+E0100-U+E01EF
+#   byte order mark                    U+FEFF
+#   interlinear annotation             U+FFF9-U+FFFB
+#   tag characters                     U+E0000-U+E007F
+VISIBLE_JQ='
+  def hex4: [(. / 4096 | floor) % 16, (. / 256 | floor) % 16, (. / 16 | floor) % 16, . % 16]
+    | map(if . < 10 then . + 48 else . + 55 end) | implode;
+  def escaped: explode[0]
+    | if . > 65535 then (. - 65536) as $v
+        | "\\u" + ((55296 + ($v / 1024 | floor)) | hex4) + "\\u" + ((56320 + $v % 1024) | hex4)
+      else "\\u" + hex4 end;
+  gsub("(?<c>[\\x{0000}-\\x{0008}\\x{000B}-\\x{001F}\\x{007F}-\\x{009F}\\x{034F}\\x{061C}\\x{115F}\\x{1160}\\x{200B}-\\x{200F}\\x{2028}-\\x{202E}\\x{2060}-\\x{206F}\\x{3164}\\x{FE00}-\\x{FE0F}\\x{FEFF}\\x{FFA0}\\x{FFF9}-\\x{FFFB}\\x{E0000}-\\x{E007F}\\x{E0100}-\\x{E01EF}])"; .c | escaped)
+'
+
+# Copy stdin to stdout, line by line, with every character above escaped.
+# Without jq nothing is escaped; only `show` can get this far without it.
+visible() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -R -r "$VISIBLE_JQ"
+  else
+    cat
+  fi
+}
+
 cmd_path() {
   local root target
   root=$(repo_root)
@@ -465,7 +518,7 @@ annotation_range_warnings() {
     | select([.annotations | if type == "array" then .[] else empty end
               | select(type == "object" and (((.oldRange | type) == "array") or ((.newRange | type) == "array")))] | length > 0)
     | "annotation ranges on file \(.path | tojson) not checked: its path has a control character"
-  ' "$plan" 2>/dev/null | while IFS= read -r warning; do echo "$PROG: $warning" >&2; done
+  ' "$plan" 2>/dev/null | visible | while IFS= read -r warning; do echo "$PROG: $warning" >&2; done
   [[ -n $ranged ]] || return 0
 
   if [[ -z $base ]]; then
@@ -523,9 +576,9 @@ annotation_range_warnings() {
       why="lies outside every hunk of the diff against $base"
     fi
     if [[ $verdict == outside ]]; then
-      echo "$PROG: annotation $index on file \"$path\" $why; Hunk skips it. Take its range from the patch's @@ headers, fix the plan, and write it again" >&2
+      echo "$PROG: annotation $index on file \"$path\" $why; Hunk skips it. Take its range from the patch's @@ headers, fix the plan, and write it again" | visible >&2
     elif [[ $verdict == unconfirmed ]]; then
-      echo "$PROG: annotation $index on file \"$path\" not confirmed: the file $why" >&2
+      echo "$PROG: annotation $index on file \"$path\" not confirmed: the file $why" | visible >&2
     fi
   done <<<"$ranged"
 }
@@ -614,7 +667,7 @@ cmd_write() {
   local warning
   while IFS= read -r warning; do
     if [[ -n $warning ]]; then echo "$PROG: $warning" >&2; fi
-  done < <(jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null; jq -r "$DANGER_WARNINGS_JQ" "$target" 2>/dev/null)
+  done < <({ jq -r "$DOOR_WARNINGS_JQ" "$target" 2>/dev/null; jq -r "$DANGER_WARNINGS_JQ" "$target" 2>/dev/null; } | visible)
 
   annotation_range_warnings "$root" "$target" "$base"
 
@@ -640,7 +693,7 @@ cmd_show() {
 
   for c in "${candidates[@]}"; do
     if [[ -f $c ]]; then
-      cat "$c"
+      visible <"$c"
       return 0
     fi
   done
@@ -843,7 +896,7 @@ cmd_notes() {
   # a long journal passes that.
   if has_flag --json "$@"; then
     printf '%s' "$notes" | jq --arg journal "$journal" --arg plan "$plan_id" --argjson all "$all" \
-      '{journal: $journal, planId: (if $all or $plan == "" then null else $plan end), notes: .}'
+      '{journal: $journal, planId: (if $all or $plan == "" then null else $plan end), notes: .}' | visible
     return 0
   fi
 
@@ -863,7 +916,7 @@ cmd_notes() {
     "",
     "\(.file // "(file unknown)"):\(.line // "?")\(if .side then " (" + .side + ")" else "" end)  [\(.source // "user")\(if .parentId then ", reply to " + .parentId else "" end)\(if .resolution and .resolution != "active" then ", " + .resolution else "" end)]",
     ((.summary // "") | split("\n") | map("  " + .) | join("\n")),
-    (if .rationale then ((.rationale | split("\n") | map("  " + .) | join("\n"))) else empty end)'
+    (if .rationale then ((.rationale | split("\n") | map("  " + .) | join("\n"))) else empty end)' | visible
 }
 
 # ── review list ──────────────────────────────────────────────────────────────
@@ -1155,7 +1208,7 @@ cmd_list() {
   # The rows go to jq on stdin, never as an argument: Linux caps a single
   # argument at 128 KiB, and a few dozen reviews pass that.
   if has_flag --json "$@"; then
-    printf '%s' "$rows" | jq --arg dir "$sdir" '{stateDir: $dir, reviews: .}'
+    printf '%s' "$rows" | jq --arg dir "$sdir" '{stateDir: $dir, reviews: .}' | visible
     return 0
   fi
 
@@ -1174,8 +1227,8 @@ cmd_list() {
   while IFS=$'\t' read -r age repo branch head window live notes viewed sends; do
     printf '%-4s  %-32.32s  %-26.26s  %-7s  %-7s  %-4s  %-5s  %-7s  %s\n' \
       "$age" "$repo" "$branch" "$head" "$window" "$live" "$notes" "$viewed" "$sends"
-  done < <(printf '%s' "$rows" | jq -r "$LIST_TEXT_JQ")
-  printf '%s' "$rows" | jq -r '.[] | select(.error) | "\(.plan): \(.error)"' | while IFS= read -r row; do
+  done < <(printf '%s' "$rows" | jq -r "$LIST_TEXT_JQ" | visible)
+  printf '%s' "$rows" | jq -r '.[] | select(.error) | "\(.plan): \(.error)"' | visible | while IFS= read -r row; do
     echo "$PROG: $row" >&2
   done
 }
@@ -1716,7 +1769,7 @@ cmd_danger() {
     1)
       err=$(mktemp)
       if ! verdict=$(cd "$root" && "$tool" --floor --stdout --committed 2>"$err"); then
-        echo "$PROG: bin/merge-danger --floor failed: $(sed 's/^merge-danger: //' "$err" | head -n 1); no cross-check" >&2
+        echo "$PROG: bin/merge-danger --floor failed: $(sed 's/^merge-danger: //' "$err" | head -n 1); no cross-check" | visible >&2
         rm -f "$err"
         return 0
       fi
@@ -1725,7 +1778,7 @@ cmd_danger() {
       status=$(printf '%s\n' "$msg" | head -n 1 | sed 's/^merge-danger: //; s/;.*//')
       ;;
     *)
-      echo "$PROG: bin/merge-danger --check failed (exit $rc): $(printf '%s\n' "$msg" | head -n 1 | sed 's/^merge-danger: //'); no cross-check" >&2
+      echo "$PROG: bin/merge-danger --check failed (exit $rc): $(printf '%s\n' "$msg" | head -n 1 | sed 's/^merge-danger: //'); no cross-check" | visible >&2
       return 0
       ;;
   esac
@@ -1740,7 +1793,7 @@ cmd_danger() {
     echo "$PROG: could not compare the plan with the verdict; no cross-check" >&2
     return 0
   fi
-  printf '%s\n' "$out"
+  printf '%s\n' "$out" | visible
 
   local n
   n=$(printf '%s' "$out" | jq '.disagreements | length')
@@ -2083,7 +2136,7 @@ cmd_render() {
         printf '<script type="text/markdown">%s</script>' "$(b64e "$why")"
         printf '</div></div>\n'
       else
-        echo "$PROG: no why for group '${g_title[i]}' (expected $why)" >&2
+        echo "$PROG: no why for group '${g_title[i]}' (expected $why)" | visible >&2
       fi
 
       # The example is optional by design: a Skim group would have to invent one.
@@ -2097,7 +2150,7 @@ cmd_render() {
         printf '    <div class="md"><script type="text/markdown">%s</script></div>\n' "$(b64e "$body")"
       else
         printf '    <p class="no-writeup">No writeup was written for this group.</p>\n'
-        echo "$PROG: no body for group '${g_title[i]}' (expected $body)" >&2
+        echo "$PROG: no body for group '${g_title[i]}' (expected $body)" | visible >&2
       fi
 
       if [[ -s $notes ]]; then
@@ -2274,10 +2327,10 @@ prose_warnings() {
     [[ -s $f ]] || continue
     if [[ $(basename "$f") == _glossary.md ]]; then
       awk -v prog="$PROG" -v max_terms="$GLOSSARY_MAX_TERMS" \
-        -v max_words="$GLOSSARY_MAX_WORDS" "$CODEWORD_AWK$GLOSSARY_AWK" "$f" >&2
+        -v max_words="$GLOSSARY_MAX_WORDS" "$CODEWORD_AWK$GLOSSARY_AWK" "$f" | visible >&2
     else
       PROSE_NAME="$(basename "$f")" awk -v prog="$PROG" -v max="$SENTENCE_MAX_WORDS" \
-        "$CODEWORD_AWK$PROSE_AWK" "$f" >&2
+        "$CODEWORD_AWK$PROSE_AWK" "$f" | visible >&2
     fi
   done
 }
@@ -2303,7 +2356,7 @@ SENTINEL_EVERY=15
 # goes out before anything is spent: when stdout cannot take it, this returns
 # 1 and the caller puts the marker back, so the next wait offers it again.
 emit_marker() {
-  printf '%s\n' "$1" | jq . || return 1
+  printf '%s\n' "$1" | jq . | visible || return 1
 }
 
 # The answer could not be written. Say so and fail; the caller has already put
