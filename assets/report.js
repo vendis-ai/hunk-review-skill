@@ -595,28 +595,64 @@
     if (document.documentElement.getAttribute('data-theme') === 'dark') dark = true;
     // A diagram is agent-written text drawn into this page, so it gets no say
     // over how it is drawn. "strict" turns off click handlers and script
-    // links and sanitizes labels. `secure` lists the keys a diagram's front
-    // matter or %%{init}%% directive may not change; Mermaid's own list is kept
-    // and the keys below are added. Bounded size and edges keep one diagram
-    // from hanging the page. Mermaid's error drawing is off: a diagram that
-    // does not parse stays as its source text instead of a bomb in the page.
+    // links and sanitizes labels. HTML labels are off, so a label is SVG text
+    // and never HTML inside a foreignObject. `secure` lists the keys a
+    // diagram's front matter or %%{init}%% directive may not change; Mermaid's
+    // own list is kept and the keys below are added. Mermaid removes a secure
+    // key at any depth, so `htmlLabels` also locks `flowchart.htmlLabels`.
+    // Bounded size and edges keep one diagram from hanging the page. Mermaid's
+    // error drawing is off: a diagram that does not parse stays as its source
+    // text instead of a bomb in the page.
     var secure = ((mermaid.mermaidAPI && mermaid.mermaidAPI.defaultConfig &&
       mermaid.mermaidAPI.defaultConfig.secure) || []).slice();
     ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'maxEdges',
       'suppressErrorRendering', 'theme', 'themeCSS', 'themeVariables',
-      'dompurifyConfig', 'fontFamily', 'altFontFamily'].forEach(function (key) {
+      'dompurifyConfig', 'fontFamily', 'altFontFamily', 'htmlLabels'].forEach(function (key) {
       if (secure.indexOf(key) === -1) secure.push(key);
     });
     mermaid.initialize({
       startOnLoad: false,
       theme: dark ? 'dark' : 'neutral',
       securityLevel: 'strict',
+      htmlLabels: false,
       maxTextSize: 50000,
       maxEdges: 500,
       suppressErrorRendering: true,
       secure: secure
     });
     mermaidReady = true;
+  }
+
+  // With HTML labels off, a drawing needs no script, no HTML and no link. So
+  // anything of that kind in Mermaid's SVG came from the diagram text, and it
+  // is removed: script and foreignObject elements, every on* attribute, and
+  // every href that leaves the SVG. An <a> is replaced by its children, so the
+  // node it wrapped stays drawn. An href to a fragment (#id) stays, because
+  // markers and <use> point inside the SVG with it.
+  function scrubSvg(svg) {
+    var all = [svg].concat(Array.prototype.slice.call(svg.querySelectorAll('*')));
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el !== svg && !svg.contains(el)) continue; // inside an element already removed
+      var tag = el.localName.toLowerCase();
+      if (tag === 'script' || tag === 'foreignobject') {
+        el.parentNode.removeChild(el);
+        continue;
+      }
+      var attrs = el.attributes;
+      for (var k = attrs.length - 1; k >= 0; k--) {
+        // The qualified name, so `xlink:href` matches with or without its namespace.
+        var name = attrs[k].name.toLowerCase();
+        if (attrs[k].localName.toLowerCase().indexOf('on') === 0 ||
+          (/(^|:)href$/.test(name) && !/^\s*#/.test(attrs[k].value))) {
+          el.removeAttributeNode(attrs[k]);
+        }
+      }
+      if (tag === 'a' && el !== svg) {
+        while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+        el.parentNode.removeChild(el);
+      }
+    }
   }
 
   // Returns mermaid's promise when there is work to do, so scroll restore can
@@ -630,15 +666,30 @@
     // does not parse reads as its text and not as a gap in the page.
     var sources = [];
     for (var i = 0; i < pending.length; i++) sources.push(pending[i].textContent);
-    function keepFailed() {
+    // Once the run ends, scrub every drawing again, in case one was missed
+    // below; a second scrub changes nothing.
+    function settle() {
       for (var j = 0; j < pending.length; j++) {
-        if (!pending[j].querySelector('svg')) pending[j].textContent = sources[j];
+        var svg = pending[j].querySelector('svg');
+        if (svg) scrubSvg(svg);
+        else pending[j].textContent = sources[j];
+      }
+    }
+    // Mermaid calls this right after it puts a diagram's SVG into the page,
+    // before it binds any handler, so the scrub runs before anything can fire.
+    function scrubDrawn(id) {
+      for (var j = 0; j < pending.length; j++) {
+        var svg = pending[j].querySelector('svg');
+        if (svg && svg.id === id) {
+          scrubSvg(svg);
+          return;
+        }
       }
     }
     try {
-      var run = mermaid.run({ nodes: pending, suppressErrors: true });
+      var run = mermaid.run({ nodes: pending, suppressErrors: true, postRenderCallback: scrubDrawn });
       if (!run || typeof run.then !== 'function') return null;
-      return run.then(keepFailed, keepFailed);
+      return run.then(settle, settle);
     } catch (e) {
       return null; /* a malformed diagram must not take the rest of the page down */
     }

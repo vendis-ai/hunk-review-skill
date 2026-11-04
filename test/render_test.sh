@@ -109,6 +109,13 @@ flowchart LR
 ```
 
 ```mermaid
+%%{init: {"htmlLabels": true, "flowchart": {"htmlLabels": true}}}%%
+flowchart LR
+  L[html-label-try] --> M[linked-node]
+  click M href "https://example.com/hostile-link-target"
+```
+
+```mermaid
 flowchart LR
   this is not a diagram ((
 ```
@@ -1107,6 +1114,11 @@ JSON
   # themeCSS is a second way for a diagram to write into the page's styles.
   assert_in 'themed-diagram' "$TMP/dom.html" "a diagram with a themeCSS directive still renders"
   assert_not_in 'darkorange' "$TMP/dom.html" "a directive cannot inject its own CSS"
+  # HTML labels put HTML inside the SVG through foreignObject. They stay off,
+  # even when a directive asks for them, and a diagram cannot add a link.
+  assert_in 'html-label-try' "$TMP/dom.html" "a diagram that asks for HTML labels still renders"
+  assert_not_in '<foreignObject' "$TMP/dom.html" "no diagram draws HTML labels"
+  assert_not_in 'hostile-link-target' "$TMP/dom.html" "a diagram cannot add a link"
   # A diagram that does not parse stays as its source. Mermaid's own error
   # drawing (the bomb and "Syntax error in text") is not put into the page.
   assert_in 'this is not a diagram' "$TMP/dom.html" "a malformed diagram stays as its source text"
