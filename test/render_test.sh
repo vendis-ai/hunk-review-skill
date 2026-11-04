@@ -530,7 +530,7 @@ seq 1 3 >"$UNI/café-new.txt"
 uni_write() {
   (cd "$UNI" && export LC_ALL="$1" &&
     printf '{"version":1,"groups":[{"title":"Core","files":[{"path":"%s","annotations":[{"summary":"x","newRange":%s}]}]}]}' "$2" "$3" |
-    run_plan write --base "$UBASE" 2>&1 >/dev/null)
+    { run_plan write --base "$UBASE" >/dev/null; } 2>&1)
 }
 for loc in C C.UTF-8 en_US.UTF-8; do
   if [[ $loc == *UTF-8 && $(LC_ALL=$loc locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -565,7 +565,7 @@ sed -i.bak 's/^5$/five/' "$NUMS/1" && rm -f "$NUMS/1.bak"
 sed -i.bak 's/^30$/thirty/' "$NUMS/01" && rm -f "$NUMS/01.bak"
 num_write() {
   (cd "$NUMS" && printf '{"version":1,"groups":[{"title":"Core","files":[{"path":"01","annotations":[{"summary":"x","newRange":%s}]}]}]}' "$1" |
-    run_plan write --base "$NBASE" 2>&1 >/dev/null)
+    { run_plan write --base "$NBASE" >/dev/null; } 2>&1)
 }
 assert_in 'annotation 0 on file "01" lies outside every hunk' <(num_write '[5,5]') \
   "a file named 01 is not judged by the hunks of a file named 1"

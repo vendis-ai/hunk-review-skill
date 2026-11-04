@@ -136,6 +136,26 @@ write_window() {
   fi
 }
 
+# with_unwritable_stdout <cmd...>: runs cmd with a stdout that takes no write,
+# so printing the answer fails. A FIFO whose only reader is gone does that on
+# every system: a write fails with EPIPE, or SIGPIPE stops the writer.
+# /dev/full would too, but macOS has none. A closed stdout does not work: the
+# next file the command opens takes fd 1, and the answer goes into it.
+with_unwritable_stdout() {
+  local fifo="$TMP/no-reader" rc
+  rm -f "$fifo"
+  mkfifo "$fifo" || return 1
+  # Opening the write end waits for a reader. This one opens it and exits.
+  ( exec 3<"$fifo" ) &
+  exec 4>"$fifo"
+  wait $!
+  "$@" >&4
+  rc=$?
+  exec 4>&-
+  rm -f "$fifo"
+  return $rc
+}
+
 echo "nothing to wait on"
 
 run_wait --timeout 5
@@ -220,7 +240,7 @@ assert_eq "$(jq -r '.notes[0].summary' "$OUT")" "$(printf 'fix\342\200\256it\363
 # marker stays where it was, so the next wait offers the same answer.
 rm -f "$LOOP/last.json"
 write_marker go
-run_plan wait --timeout 5 >/dev/full 2>"$ERR"
+with_unwritable_stdout run_plan wait --timeout 5 2>"$ERR"
 RC=$?
 assert_eq "$RC" "1" "a wait whose answer cannot be written fails"
 assert_file "$LOOP/go.json" "and leaves the marker in place"
@@ -367,7 +387,7 @@ cat >"$TMP/comments.json" <<'JSON'
 { "comments": [ { "noteId": "user:9-1", "source": "user", "filePath": "a", "newRange": [1, 1], "body": "GO: once more" } ] }
 JSON
 rm -f "$LOOP/last.json" "$TMP/hunk-rm.log"
-run_plan wait --timeout 5 >/dev/full 2>"$ERR"
+with_unwritable_stdout run_plan wait --timeout 5 2>"$ERR"
 RC=$?
 assert_eq "$RC" "1" "a GO note whose answer cannot be written fails"
 assert_no_file "$LOOP/last.json" "and is not archived"
