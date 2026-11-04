@@ -47,8 +47,9 @@ cd hunk-review-skill
 Everything is symlinked back into the checkout, so updating is mostly just `git pull`. See
 [Updating](#updating).
 
-The installer never clobbers a real file, and it refuses to run if a destination directory is
-itself a symlink back into this repo. Re-running it is safe.
+The installer checks every destination before it changes anything. It never replaces a real
+file or a symlink it did not make, and it refuses to run if a destination directory resolves
+back into this repo. If it refuses anything, it changes nothing. Re-running it is safe.
 
 ### What it installs, and where
 

@@ -10,7 +10,8 @@
 # for why that is a correctness requirement rather than a preference.
 #
 # Re-running is safe. Nothing is overwritten unless it is a symlink that
-# resolves into this checkout.
+# resolves into this checkout. Every destination is checked before anything
+# changes, so a refusal leaves everything as it was.
 
 set -euo pipefail
 
@@ -84,29 +85,68 @@ guard_dest() {
   exit 1
 }
 
-# Symlink $2 -> $1, idempotently. Never clobbers a real file or directory, nor
-# a symlink that does not resolve into this repo.
-link() {
+# What linking $1 at $2 would do: prints `linked` (already right), `relink` (a
+# symlink into this repo, to replace) or `new` (nothing there). A real file or
+# directory, or a symlink that does not resolve into this repo, is refused:
+# the message goes to stderr and the return is 1.
+link_state() {
   local src=$1 dst=$2
   if [ -L "$dst" ]; then
     if [ "$(readlink -f -- "$dst" 2>/dev/null)" = "$(readlink -f -- "$src")" ]; then
-      ok "$(t "$dst") (already linked)"
-      return 0
-    fi
-    if ! in_repo "$dst"; then
+      echo linked
+    elif in_repo "$dst"; then
+      echo relink
+    else
       err "$(t "$dst") is a symlink this checkout did not make -- refusing to replace it"
-      FAILED=1
-      return 0
+      return 1
     fi
-    would && { ok "would relink $(t "$dst") -> $src"; return 0; }
-    rm -f -- "$dst"
   elif [ -e "$dst" ]; then
     err "$(t "$dst") exists and is not a symlink -- refusing to replace it"
-    FAILED=1
-    return 0
+    return 1
+  else
+    echo new
   fi
-  would && { ok "would link $(t "$dst") -> $src"; return 0; }
-  ln -sfn -- "$src" "$dst"
+}
+
+# Rename $1 onto $2 without following $2. A plain mv onto a symlink to a
+# folder moves $1 into that folder instead. GNU mv spells this -T, BSD mv -h.
+mv_over() {
+  if mv --version >/dev/null 2>&1; then
+    mv -Tf -- "$1" "$2"
+  else
+    mv -hf -- "$1" "$2"
+  fi
+}
+
+# Symlink $2 -> $1, idempotently. Never clobbers a real file or directory, nor
+# a symlink that does not resolve into this repo. A new link is made with ln
+# without -f, so it fails rather than replace anything that appeared since the
+# check. An old link is replaced by renaming a fresh one over it, so the
+# destination is never missing, not even for a moment.
+link() {
+  local src=$1 dst=$2 state tmp
+  state=$(link_state "$src" "$dst") || { FAILED=1; return 0; }
+  case $state in
+    linked)
+      ok "$(t "$dst") (already linked)"
+      return 0 ;;
+    new)
+      would && { ok "would link $(t "$dst") -> $src"; return 0; }
+      if ! ln -s -- "$src" "$dst"; then
+        err "could not link $(t "$dst")"
+        FAILED=1
+        return 0
+      fi ;;
+    relink)
+      would && { ok "would relink $(t "$dst") -> $src"; return 0; }
+      tmp="$(dirname -- "$dst")/.$(basename -- "$dst").new.$$"
+      if ! ln -s -- "$src" "$tmp" || ! mv_over "$tmp" "$dst"; then
+        rm -f -- "$tmp"
+        err "could not replace $(t "$dst")"
+        FAILED=1
+        return 0
+      fi ;;
+  esac
   ok "$(t "$dst") -> $src"
 }
 
@@ -117,26 +157,56 @@ mkdirp() {
   ok "created $(t "$1")"
 }
 
-# ── 1. skills ────────────────────────────────────────────────────────────────
+# ── destinations ─────────────────────────────────────────────────────────────
 # ~/.agents/skills is the canonical cross-agent location: Codex, OpenCode,
 # Cursor, Cline, Warp, Zed, Gemini CLI, Copilot and a dozen others read it
 # directly and need no per-agent link. Claude Code is the sole outlier among
 # the common harnesses -- it reads ~/.claude/skills and nothing else.
-head_ 'Skills'
-
+#
+# The skill calls `hunk-plan` as a bare command, so it has to be on the real
+# user PATH -- not injected by a single harness.
 AGENTS_SKILLS="$HOME/.agents/skills"
-guard_dest "$AGENTS_SKILLS"
-mkdirp "$AGENTS_SKILLS"
+CLAUDE_SKILLS=""
+[ -d "$HOME/.claude" ] && CLAUDE_SKILLS="$HOME/.claude/skills"
+BIN_DIR="$HOME/.local/bin"
+
+SKILL_SRCS=()
 for src in "$REPO"/skills/*/; do
-  link "${src%/}" "$AGENTS_SKILLS/$(basename "$src")"
+  SKILL_SRCS+=("${src%/}")
 done
 
-if [ -d "$HOME/.claude" ]; then
-  CLAUDE_SKILLS="$HOME/.claude/skills"
-  guard_dest "$CLAUDE_SKILLS"
+# ── preflight ────────────────────────────────────────────────────────────────
+# Check every destination folder and every link before anything changes. A
+# refusal then leaves the machine as it was: no folder made, no link written
+# or replaced, no config touched.
+guard_dest "$AGENTS_SKILLS"
+[ -n "$CLAUDE_SKILLS" ] && guard_dest "$CLAUDE_SKILLS"
+guard_dest "$BIN_DIR"
+
+REFUSED=0
+for dir in "$AGENTS_SKILLS" ${CLAUDE_SKILLS:+"$CLAUDE_SKILLS"}; do
+  for src in "${SKILL_SRCS[@]}"; do
+    link_state "$src" "$dir/$(basename "$src")" >/dev/null || REFUSED=1
+  done
+done
+link_state "$REPO/bin/hunk-plan" "$BIN_DIR/hunk-plan" >/dev/null || REFUSED=1
+if [ "$REFUSED" != 0 ]; then
+  err 'Nothing was changed. Move the paths above out of the way, then run install.sh again.'
+  exit 1
+fi
+
+# ── 1. skills ────────────────────────────────────────────────────────────────
+head_ 'Skills'
+
+mkdirp "$AGENTS_SKILLS"
+for src in "${SKILL_SRCS[@]}"; do
+  link "$src" "$AGENTS_SKILLS/$(basename "$src")"
+done
+
+if [ -n "$CLAUDE_SKILLS" ]; then
   mkdirp "$CLAUDE_SKILLS"
-  for src in "$REPO"/skills/*/; do
-    link "${src%/}" "$CLAUDE_SKILLS/$(basename "$src")"
+  for src in "${SKILL_SRCS[@]}"; do
+    link "$src" "$CLAUDE_SKILLS/$(basename "$src")"
   done
 else
   # shellcheck disable=SC2088 # literal path in a message, not an expansion
@@ -144,12 +214,8 @@ else
 fi
 
 # ── 2. hunk-plan CLI ─────────────────────────────────────────────────────────
-# The skill calls `hunk-plan` as a bare command, so it has to be on the real
-# user PATH -- not injected by a single harness.
 head_ 'hunk-plan CLI'
 
-BIN_DIR="$HOME/.local/bin"
-guard_dest "$BIN_DIR"
 mkdirp "$BIN_DIR"
 link "$REPO/bin/hunk-plan" "$BIN_DIR/hunk-plan"
 

@@ -89,7 +89,9 @@ run_install "$H1"
 assert_eq "$RC" "1" "exit 1"
 assert_match "$ERR" 'hunk-review.*did not make' "names the path and says it is not ours"
 assert_eq "$(readlink "$H1/.agents/skills/hunk-review")" "$TMP/foreign" "the foreign link is left as it was"
-assert_eq "$(readlink "$H1/.claude/skills/hunk-review")" "$CO/skills/hunk-review" "the installer goes on and recreates the other destination"
+assert_eq "$([[ -e $H1/.claude/skills/hunk-review || -L $H1/.claude/skills/hunk-review ]] && echo present || echo absent)" \
+  "absent" "nothing else is linked either"
+assert_match "$ERR" 'Nothing was changed' "says nothing was changed"
 run_install "$H1" --dry-run
 assert_eq "$(readlink "$H1/.agents/skills/hunk-review")" "$TMP/foreign" "dry run leaves it too"
 
@@ -112,6 +114,32 @@ assert_eq "$(readlink "$H1/.agents/skills/hunk-review")" "$CO/skills/hunk-review
 run_install "$H1"
 assert_eq "$RC" "0" "exit 0"
 assert_eq "$(readlink "$H1/.agents/skills/hunk-review")" "$CO/skills/hunk-review" "replaced with the current path"
+
+echo "an old link to another folder in the checkout"
+
+# A plain mv onto a symlink to a folder moves the new link into that folder.
+# The installer renames over the link itself, so the folder stays untouched.
+rm "$H1/.agents/skills/hunk-review"
+ln -s "$CO/skills/hunk-handle-notes" "$H1/.agents/skills/hunk-review"
+BEFORE=$(find "$CO/skills/hunk-handle-notes" | sort | wc -l)
+run_install "$H1"
+assert_eq "$RC" "0" "exit 0"
+assert_eq "$(readlink "$H1/.agents/skills/hunk-review")" "$CO/skills/hunk-review" "replaced with the current path"
+assert_eq "$(find "$CO/skills/hunk-handle-notes" | sort | wc -l)" "$BEFORE" "nothing was moved into the folder it pointed at"
+assert_eq "$(find "$H1/.agents/skills" -name '.*' | wc -l | tr -d ' ')" "0" "no temporary link is left behind"
+
+echo "a refusal changes nothing"
+
+H4="$TMP/h4"
+new_home "$H4"
+mkdir -p "$H4/.local/bin"
+printf 'mine\n' >"$H4/.local/bin/hunk-plan"
+run_install "$H4"
+assert_eq "$RC" "1" "exit 1"
+assert_match "$ERR" 'hunk-plan.*is not a symlink' "names the refused path"
+assert_eq "$([[ -e $H4/.agents ]] && echo present || echo absent)" "absent" "no skills folder is made"
+assert_eq "$([[ -e $H4/.claude/skills ]] && echo present || echo absent)" "absent" "no Claude Code skills folder is made"
+assert_eq "$([[ -e $H4/.config/hunk ]] && echo present || echo absent)" "absent" "Hunk's config is not written"
 
 echo "a real file at the destination"
 
